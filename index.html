@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="fr" dir="ltr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RahmaPoint — رحمة بوينت</title>
+  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link href="https://fonts.googleapis.com/css2?family=Amiri:wght@400;700&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet" />
+</head>
+<body>
+
+  <!-- HEADER -->
+  <header class="header">
+    <div class="header-inner">
+      <div class="logo">
+        <div class="logo-icon">♡</div>
+        <div class="logo-text">
+          <span class="logo-ar">رحمة بوينت</span>
+          <span class="logo-fr">RahmaPoint</span>
+        </div>
+      </div>
+      <div class="header-actions">
+        <button class="lang-toggle" id="langToggle" onclick="toggleLang()">العربية</button>
+        <button class="btn-primary pulse" onclick="openSignalModal()">
+          <span class="btn-icon">＋</span>
+          <span data-fr="Signaler" data-ar="إضافة موقف">Signaler</span>
+        </button>
+      </div>
+    </div>
+    <div class="tagline">
+      <span data-fr="Relier le besoin à l'action, ensemble." data-ar="نربط الحاجة بالفعل، معًا.">Relier le besoin à l'action, ensemble.</span>
+    </div>
+  </header>
+
+  <!-- STATS BAR -->
+  <div class="stats-bar">
+    <div class="stat">
+      <span class="stat-num" id="totalCount">0</span>
+      <span class="stat-label" data-fr="Situations" data-ar="مواقف">Situations</span>
+    </div>
+    <div class="stat-sep"></div>
+    <div class="stat">
+      <span class="stat-num" id="resolvedCount">0</span>
+      <span class="stat-label" data-fr="Résolues" data-ar="محلولة">Résolues</span>
+    </div>
+    <div class="stat-sep"></div>
+    <div class="stat">
+      <span class="stat-num" id="activeCount">0</span>
+      <span class="stat-label" data-fr="En attente" data-ar="بانتظار">En attente</span>
+    </div>
+  </div>
+
+  <!-- FILTERS -->
+  <div class="filter-bar">
+    <button class="filter-btn active" data-filter="all" onclick="setFilter('all', this)">
+      <span data-fr="Tout" data-ar="الكل">Tout</span>
+    </button>
+    <button class="filter-btn" data-filter="nourriture" onclick="setFilter('nourriture', this)">
+      🍞 <span data-fr="Nourriture" data-ar="طعام">Nourriture</span>
+    </button>
+    <button class="filter-btn" data-filter="medical" onclick="setFilter('medical', this)">
+      🏥 <span data-fr="Médical" data-ar="طبي">Médical</span>
+    </button>
+    <button class="filter-btn" data-filter="vetement" onclick="setFilter('vetement', this)">
+      👕 <span data-fr="Vêtement" data-ar="ملابس">Vêtement</span>
+    </button>
+    <button class="filter-btn" data-filter="abri" onclick="setFilter('abri', this)">
+      🏠 <span data-fr="Abri" data-ar="مأوى">Abri</span>
+    </button>
+    <button class="filter-btn" data-filter="autre" onclick="setFilter('autre', this)">
+      💬 <span data-fr="Autre" data-ar="أخرى">Autre</span>
+    </button>
+  </div>
+
+  <!-- MAP CONTAINER -->
+  <div class="map-wrapper">
+    <div id="map"></div>
+    <!-- Style switcher -->
+    <div class="map-style-switcher">
+      <button class="style-btn active" data-style="carto" onclick="switchMapStyle('carto', this)" title="Carto (défaut)">🗺</button>
+      <button class="style-btn" data-style="satellite" onclick="switchMapStyle('satellite', this)" title="Satellite">🛰</button>
+      <button class="style-btn" data-style="dark" onclick="switchMapStyle('dark', this)" title="Dark">🌙</button>
+      <button class="style-btn" data-style="topo" onclick="switchMapStyle('topo', this)" title="Topographie">⛰</button>
+    </div>
+    <!-- Click hint -->
+    <div class="map-click-hint" id="mapHint">
+      <span data-fr="💡 Cliquez sur la carte pour signaler une situation" data-ar="💡 انقر على الخريطة للإبلاغ عن موقف">💡 Cliquez sur la carte pour signaler une situation</span>
+    </div>
+  </div>
+
+  <!-- SITUATIONS LIST -->
+  <section class="situations-section">
+    <h2 class="section-title" data-fr="Situations récentes" data-ar="المواقف الأخيرة">Situations récentes</h2>
+    <div class="cards-grid" id="cardsGrid"></div>
+    <div class="empty-state" id="emptyState" style="display:none">
+      <div class="empty-icon">🕊️</div>
+      <p data-fr="Aucune situation pour le moment." data-ar="لا توجد مواقف حالياً.">Aucune situation pour le moment.</p>
+    </div>
+  </section>
+
+  <!-- FOOTER -->
+  <footer class="footer">
+    <div class="footer-logo">♡ RahmaPoint</div>
+    <p data-fr="Plateforme de solidarité communautaire — sans compte requis" data-ar="منصة التضامن المجتمعي — دون الحاجة لتسجيل">Plateforme de solidarité communautaire — sans compte requis</p>
+  </footer>
+
+  <!-- MODAL: SIGNALER -->
+  <div class="modal-overlay" id="signalModal" onclick="closeOnOverlay(event, 'signalModal')">
+    <div class="modal">
+      <button class="modal-close" onclick="closeSignalModal()">✕</button>
+      <h2 class="modal-title">
+        <span data-fr="Signaler une situation" data-ar="الإبلاغ عن موقف">Signaler une situation</span>
+      </h2>
+
+      <div class="form-group">
+        <label data-fr="Type de besoin" data-ar="نوع الحاجة">Type de besoin</label>
+        <div class="type-grid">
+          <button class="type-btn" data-type="nourriture" onclick="selectType(this)">🍞 <span data-fr="Nourriture" data-ar="طعام">Nourriture</span></button>
+          <button class="type-btn" data-type="medical" onclick="selectType(this)">🏥 <span data-fr="Médical" data-ar="طبي">Médical</span></button>
+          <button class="type-btn" data-type="vetement" onclick="selectType(this)">👕 <span data-fr="Vêtement" data-ar="ملابس">Vêtement</span></button>
+          <button class="type-btn" data-type="abri" onclick="selectType(this)">🏠 <span data-fr="Abri" data-ar="مأوى">Abri</span></button>
+          <button class="type-btn" data-type="autre" onclick="selectType(this)">💬 <span data-fr="Autre" data-ar="أخرى">Autre</span></button>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label data-fr="Description" data-ar="الوصف">Description</label>
+        <textarea id="descInput" rows="3" placeholder="Décrivez la situation..."></textarea>
+      </div>
+
+      <div class="form-group">
+        <label data-fr="Localisation" data-ar="الموقع">Localisation</label>
+        <div class="location-row">
+          <input type="text" id="locationInput" placeholder="Ex: Rue Didouche Mourad, Sétif" readonly />
+          <button class="btn-locate" onclick="getLocation()">📍</button>
+        </div>
+        <small data-fr="Cliquez sur 📍 pour utiliser votre position actuelle" data-ar="اضغط 📍 لاستخدام موقعك الحالي">Cliquez sur 📍 pour utiliser votre position actuelle</small>
+      </div>
+
+      <div class="form-group">
+        <label data-fr="Contact (optionnel)" data-ar="التواصل (اختياري)">Contact (optionnel)</label>
+        <input type="text" id="contactInput" placeholder="Téléphone, WhatsApp..." />
+      </div>
+
+      <div class="modal-actions">
+        <button class="btn-secondary" onclick="closeSignalModal()">
+          <span data-fr="Annuler" data-ar="إلغاء">Annuler</span>
+        </button>
+        <button class="btn-primary" onclick="submitSignal()">
+          <span data-fr="Publier" data-ar="نشر">Publier</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: DETAIL -->
+  <div class="modal-overlay" id="detailModal" onclick="closeOnOverlay(event, 'detailModal')">
+    <div class="modal modal-detail">
+      <button class="modal-close" onclick="document.getElementById('detailModal').classList.remove('active')">✕</button>
+      <div id="detailContent"></div>
+    </div>
+  </div>
+
+  <!-- TOAST -->
+  <div class="toast" id="toast"></div>
+
+  <!-- MODAL: POLITIQUE DE CONFIDENTIALITÉ (obligatoire) -->
+  <div class="modal-overlay active" id="privacyModal">
+    <div class="modal modal-privacy">
+      <div class="privacy-header">
+        <div class="privacy-logo">♡ RahmaPoint</div>
+        <h2 class="privacy-title" data-fr="Politique de confidentialité" data-ar="سياسة الخصوصية">Politique de confidentialité</h2>
+        <p class="privacy-subtitle" data-fr="Veuillez lire et accepter avant de continuer" data-ar="يرجى القراءة والموافقة قبل المتابعة">Veuillez lire et accepter avant de continuer</p>
+      </div>
+      <div class="privacy-body">
+        <div class="privacy-article">
+          <div class="art-num">1</div>
+          <div>
+            <div class="art-title" data-fr="Introduction" data-ar="مقدمة">Introduction</div>
+            <div class="art-text" data-fr="Nous accordons une importance primordiale au respect de la vie privée des utilisateurs. En utilisant ce site, vous acceptez la présente politique de confidentialité." data-ar="نحن في RahmaPoint نولي أهمية قصوى لاحترام خصوصية المستخدمين وحماية بياناتهم الشخصية. باستخدامك للموقع، فإنك توافق على سياسة الخصوصية هذه.">Nous accordons une importance primordiale au respect de la vie privée des utilisateurs. En utilisant ce site, vous acceptez la présente politique de confidentialité.</div>
+          </div>
+        </div>
+        <div class="privacy-article">
+          <div class="art-num">2</div>
+          <div>
+            <div class="art-title" data-fr="Nature du service" data-ar="طبيعة الخدمة">Nature du service</div>
+            <div class="art-text" data-fr="RahmaPoint est une plateforme caritative visant à faciliter l'aide aux personnes dans le besoin en Algérie." data-ar="RahmaPoint منصة خيرية تهدف إلى تسهيل إيصال المساعدة للأشخاص المحتاجين داخل الجزائر.">RahmaPoint est une plateforme caritative visant à faciliter l'aide aux personnes dans le besoin en Algérie.</div>
+          </div>
+        </div>
+        <div class="privacy-article">
+          <div class="art-num">3</div>
+          <div>
+            <div class="art-title" data-fr="Données collectées" data-ar="البيانات التي نجمعها">Données collectées</div>
+            <div class="art-text" data-fr="• Localisation géographique approximative • Description de la situation (optionnel) • Photo (optionnel)" data-ar="• الموقع الجغرافي التقريبي • وصف الحالة (اختياري) • صورة (إن وجدت – اختياري)">• Localisation géographique approximative<br>• Description de la situation (optionnel)<br>• Photo (optionnel)</div>
+          </div>
+        </div>
+        <div class="privacy-article">
+          <div class="art-num">4</div>
+          <div>
+            <div class="art-title" data-fr="Utilisation des données" data-ar="كيفية استخدام البيانات">Utilisation des données</div>
+            <div class="art-text" data-fr="Nous utilisons les données pour faciliter l'aide, prévenir les faux signalements et améliorer le service." data-ar="نستخدم البيانات لتسهيل تقديم المساعدة ومنع البلاغات الكاذبة وتحسين الخدمة.">Nous utilisons les données pour faciliter l'aide, prévenir les faux signalements et améliorer le service.</div>
+          </div>
+        </div>
+        <div class="privacy-article">
+          <div class="art-num">5</div>
+          <div>
+            <div class="art-title" data-fr="Partage des données" data-ar="مشاركة البيانات">Partage des données</div>
+            <div class="art-text" data-fr="Nous ne vendons ni ne louons aucune donnée personnelle à des tiers." data-ar="لا نقوم ببيع أو تأجير أي بيانات شخصية لأي طرف ثالث.">Nous ne vendons ni ne louons aucune donnée personnelle à des tiers.</div>
+          </div>
+        </div>
+        <div class="privacy-article">
+          <div class="art-num">6</div>
+          <div>
+            <div class="art-title" data-fr="Protection des personnes dans le besoin" data-ar="حماية خصوصية الأشخاص المحتاجين">Protection des personnes dans le besoin</div>
+            <div class="art-text" data-fr="• La localisation exacte n'est pas affichée publiquement • La diffamation ou l'exploitation sont strictement interdites" data-ar="• لا يتم عرض الموقع الدقيق للعامة • يُمنع التشهير أو الاستغلال">• La localisation exacte n'est pas affichée publiquement<br>• La diffamation ou l'exploitation sont strictement interdites</div>
+          </div>
+        </div>
+        <div class="privacy-article">
+          <div class="art-num">7</div>
+          <div>
+            <div class="art-title" data-fr="Sécurité des données" data-ar="أمن البيانات">Sécurité des données</div>
+            <div class="art-text" data-fr="Nous appliquons des mesures raisonnables de protection, sachant qu'aucune sécurité absolue n'existe sur Internet." data-ar="نلتزم بإجراءات معقولة لحماية البيانات، مع العلم أنه لا يوجد أمان مطلق على الإنترنت.">Nous appliquons des mesures raisonnables de protection, sachant qu'aucune sécurité absolue n'existe sur Internet.</div>
+          </div>
+        </div>
+        <div class="privacy-article">
+          <div class="art-num">8</div>
+          <div>
+            <div class="art-title" data-fr="Durée de conservation" data-ar="مدة الاحتفاظ بالبيانات">Durée de conservation</div>
+            <div class="art-text" data-fr="Les signalements sont conservés uniquement pour la durée nécessaire à la finalité humanitaire." data-ar="يتم الاحتفاظ بالبلاغات فقط للمدة اللازمة للغرض الإنساني.">Les signalements sont conservés uniquement pour la durée nécessaire à la finalité humanitaire.</div>
+          </div>
+        </div>
+        <div class="privacy-article">
+          <div class="art-num">9</div>
+          <div>
+            <div class="art-title" data-fr="Responsabilité de l'utilisateur" data-ar="مسؤولية المستخدم">Responsabilité de l'utilisateur</div>
+            <div class="art-text" data-fr="L'utilisateur s'engage à ne pas abuser de la plateforme ni à publier des informations trompeuses." data-ar="يتعهد المستخدم بعدم إساءة استخدام المنصة أو نشر معلومات مضللة.">L'utilisateur s'engage à ne pas abuser de la plateforme ni à publier des informations trompeuses.</div>
+          </div>
+        </div>
+        <div class="privacy-article">
+          <div class="art-num">10</div>
+          <div>
+            <div class="art-title" data-fr="Clause de non-responsabilité" data-ar="إخلاء المسؤولية">Clause de non-responsabilité</div>
+            <div class="art-text" data-fr="RahmaPoint est une plateforme de coordination, pas un service médical ou sécuritaire." data-ar="RahmaPoint منصة تنسيقية وليست جهة طبية أو أمنية.">RahmaPoint est une plateforme de coordination, pas un service médical ou sécuritaire.</div>
+          </div>
+        </div>
+        <div class="privacy-article">
+          <div class="art-num">11</div>
+          <div>
+            <div class="art-title" data-fr="Droits de l'utilisateur" data-ar="حقوق المستخدم">Droits de l'utilisateur</div>
+            <div class="art-text" data-fr="Vous avez le droit de demander la suppression de votre signalement ou de signaler un contenu abusif." data-ar="يحق للمستخدم طلب حذف بلاغه أو الإبلاغ عن محتوى مخالف.">Vous avez le droit de demander la suppression de votre signalement ou de signaler un contenu abusif.</div>
+          </div>
+        </div>
+        <div class="privacy-article">
+          <div class="art-num">12</div>
+          <div>
+            <div class="art-title" data-fr="Modifications" data-ar="التعديلات">Modifications</div>
+            <div class="art-text" data-fr="Nous pouvons mettre à jour cette politique si nécessaire." data-ar="قد نقوم بتحديث سياسة الخصوصية عند الحاجة.">Nous pouvons mettre à jour cette politique si nécessaire.</div>
+          </div>
+        </div>
+      </div>
+      <div class="privacy-footer">
+        <label class="checkbox-label" id="acceptLabel">
+          <input type="checkbox" id="acceptCheck" onchange="updateAcceptBtn()" />
+          <span class="checkmark"></span>
+          <span data-fr="J'ai lu et j'accepte la politique de confidentialité de RahmaPoint" data-ar="لقد قرأت وأوافق على سياسة الخصوصية الخاصة بـ RahmaPoint">J'ai lu et j'accepte la politique de confidentialité de RahmaPoint</span>
+        </label>
+        <button class="btn-accept" id="acceptBtn" disabled onclick="acceptPrivacy()">
+          <span data-fr="Continuer →" data-ar="متابعة ←">Continuer →</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
