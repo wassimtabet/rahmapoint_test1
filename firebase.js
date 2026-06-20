@@ -1,11 +1,18 @@
-// Import the functions you need from the SDKs you need
-import { initializeApp } from "firebase/app";
-import { getAnalytics } from "firebase/analytics";
-// TODO: Add SDKs for Firebase products that you want to use
-// https://firebase.google.com/docs/web/setup#available-libraries
+// ==========================================
+// RAHMAPOINT — firebase.js (corrigé)
+// ==========================================
+// IMPORTANT : ce fichier est chargé en tant que <script type="module">
+// directement dans le navigateur (pas de bundler/Webpack/Vite).
+// Les imports "firebase/app" tout court (sans URL) ne fonctionnent
+// QUE si vous avez un outil de build (npm + bundler). Comme ce site
+// est un simple site statique (HTML/CSS/JS) hébergé sur GitHub Pages,
+// il faut importer le SDK Firebase depuis l'URL du CDN officiel.
 
-// Your web app's Firebase configuration
-// For Firebase JS SDK v7.20.0 and later, measurementId is optional
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-app.js";
+import { getAnalytics } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-analytics.js";
+import { getFirestore } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
+
+// Votre configuration Firebase (web app)
 const firebaseConfig = {
   apiKey: "AIzaSyCUrMrLy-bFPOT9YCglSWZTFxcusnsctJQ",
   authDomain: "rahma-point.firebaseapp.com",
@@ -16,6 +23,20 @@ const firebaseConfig = {
   measurementId: "G-DD05YNHGDE"
 };
 
-// Initialize Firebase
+// Initialisation de Firebase
 const app = initializeApp(firebaseConfig);
-const analytics = getAnalytics(app);
+
+// Analytics (optionnel, ne bloque pas le site s'il échoue, ex: en local sans https)
+let analytics;
+try {
+  analytics = getAnalytics(app);
+} catch (e) {
+  console.warn("Analytics non initialisé (normal en local / http) :", e);
+}
+
+// Firestore — c'était la pièce manquante : sans ceci, app.js ne pouvait
+// pas lire/écrire de "signalements" dans la base de données.
+const db = getFirestore(app);
+
+// On exporte db pour pouvoir l'utiliser dans app.js
+export { app, analytics, db };
