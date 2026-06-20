@@ -441,7 +441,7 @@ async function submitSignal() {
   );
 
 }
-
+}   
 // ── ACTIONS ───────────────────────────────────
 function toggleResolve(id) {
   const s = situations.find(x => x.id === id);
