@@ -1,8 +1,28 @@
 /* ==========================================
-   RAHMAPOINT — app.js
+   RAHMAPOINT — app.js (corrigé)
    ========================================== */
 
+// ── FIREBASE ──────────────────────────────
+// Connexion à firebase.js + Firestore (db était utilisé plus bas
+// sans jamais être importé : c'était le bug principal qui empêchait
+// toute communication avec Firebase).
+import { db } from './firebase.js';
+import {
+  collection,
+  addDoc,
+  doc,
+  updateDoc,
+  deleteDoc,
+  onSnapshot,
+  query,
+  orderBy,
+} from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
+
 // ── STATE ──────────────────────────────────
+// Les situations viennent maintenant de Firestore en temps réel
+// (voir listenToFirestore ci-dessous). localStorage sert uniquement
+// de cache local pour un affichage instantané avant que Firestore
+// ait répondu.
 let situations = JSON.parse(localStorage.getItem('rahmapoint_situations') || '[]');
 let currentLang = 'fr';
 let currentFilter = 'all';
@@ -47,9 +67,32 @@ function acceptPrivacy() {
 document.addEventListener('DOMContentLoaded', () => {
   checkPrivacyAccepted();
   initMap();
-  renderAll();
+  renderAll();    // affichage immédiat avec le cache local (localStorage)
   updateStats();
+  listenToFirestore(); // puis on se synchronise en temps réel avec Firebase
 });
+
+// ── FIRESTORE SYNC ────────────────────────────
+// Écoute en temps réel de la collection "signalements" : dès qu'un
+// signalement est ajouté/modifié/supprimé (par vous ou par un autre
+// visiteur), la liste et la carte se mettent à jour automatiquement.
+function listenToFirestore() {
+  try {
+    const q = query(collection(db, "signalements"), orderBy("createdAt", "asc"));
+    onSnapshot(q, (snapshot) => {
+      situations = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+      localStorage.setItem('rahmapoint_situations', JSON.stringify(situations));
+      renderAll();
+    }, (error) => {
+      console.error("Erreur de synchronisation Firestore :", error);
+      showToast(currentLang === 'fr'
+        ? '⚠️ Connexion à Firebase impossible — données locales affichées'
+        : '⚠️ تعذّر الاتصال بـ Firebase — تُعرض البيانات المحلية');
+    });
+  } catch (error) {
+    console.error(error);
+  }
+}
 
 // ── MAP TILE LAYERS ──────────────────────────
 const tileLayers = {
@@ -391,8 +434,13 @@ async function submitSignal() {
     return;
   }
 
+  // On n'envoie pas de champ "id" : Firestore génère lui-même un
+  // identifiant unique pour le document (addDoc le retourne dans
+  // docRef.id). L'ancien code créait un id local avec Date.now()
+  // ET laissait Firestore en créer un autre : les deux ne
+  // correspondaient jamais, ce qui cassait resolve/report/comment
+  // sur les signalements envoyés.
   const newS = {
-    id: Date.now().toString(),
     type: selectedType,
     description: desc,
     location: locText,
@@ -406,20 +454,16 @@ async function submitSignal() {
   };
 
   try {
+    await addDoc(collection(db, "signalements"), newS);
+    // Pas besoin de pousser manuellement dans "situations" ni d'appeler
+    // save() ici : listenToFirestore() (onSnapshot) reçoit automatiquement
+    // le nouveau document et met à jour l'affichage pour tout le monde.
 
-  await addDoc(
-    collection(db, "signalements"),
-    newS
-  );
+    closeSignalModal();
 
-  situations.push(newS);
-  save();
-
-  closeSignalModal();
-
-  if (tempMarker) {
-    map.removeLayer(tempMarker);
-    tempMarker = null;
+    if (tempMarker) {
+      map.removeLayer(tempMarker);
+      tempMarker = null;
   }
 
   renderAll();
@@ -443,16 +487,27 @@ async function submitSignal() {
 }
 }   
 // ── ACTIONS ───────────────────────────────────
-function toggleResolve(id) {
+// Avant, ces fonctions modifiaient seulement le tableau local "situations"
+// et appelaient save() (localStorage) : les changements n'étaient donc
+// JAMAIS envoyés à Firebase, et un autre visiteur ne les voyait jamais.
+// Elles écrivent maintenant directement dans Firestore ; c'est ensuite
+// listenToFirestore() (onSnapshot) qui met à jour l'affichage pour tout
+// le monde, y compris vous-même.
+
+async function toggleResolve(id) {
   const s = situations.find(x => x.id === id);
   if (!s) return;
-  s.resolved = !s.resolved;
-  save();
-  renderAll();
-  showToast(currentLang === 'fr'
-    ? (s.resolved ? '✓ Marqué comme résolu' : '↩ Rouvert')
-    : (s.resolved ? '✓ وُضعت علامة محلول' : '↩ أُعيد فتحه')
-  );
+  const newResolved = !s.resolved;
+  try {
+    await updateDoc(doc(db, "signalements", id), { resolved: newResolved });
+    showToast(currentLang === 'fr'
+      ? (newResolved ? '✓ Marqué comme résolu' : '↩ Rouvert')
+      : (newResolved ? '✓ وُضعت علامة محلول' : '↩ أُعيد فتحه')
+    );
+  } catch (error) {
+    console.error(error);
+    showToast(currentLang === 'fr' ? 'Erreur Firebase' : 'خطأ في Firebase');
+  }
 }
 
 function resolveFromMap(id) {
@@ -460,43 +515,49 @@ function resolveFromMap(id) {
   map.closePopup();
 }
 
-function reportSituation(id) {
+async function reportSituation(id) {
   const s = situations.find(x => x.id === id);
   if (!s) return;
-  s.reportCount = (s.reportCount || 0) + 1;
+  const newCount = (s.reportCount || 0) + 1;
 
-  // Auto-suppression si 2 signalements de fausse information
-  if (s.reportCount >= 2) {
-    situations = situations.filter(x => x.id !== id);
-    save();
-    renderAll();
-    // Fermer le modal détail si ouvert
-    document.getElementById('detailModal').classList.remove('active');
+  try {
+    // Auto-suppression si 2 signalements de fausse information
+    if (newCount >= 2) {
+      await deleteDoc(doc(db, "signalements", id));
+      document.getElementById('detailModal').classList.remove('active');
+      showToast(currentLang === 'fr'
+        ? '🗑️ Situation supprimée automatiquement (2 signalements)'
+        : '🗑️ تم حذف الموقف تلقائياً (بلاغان)');
+      return;
+    }
+
+    await updateDoc(doc(db, "signalements", id), { reportCount: newCount });
     showToast(currentLang === 'fr'
-      ? '🗑️ Situation supprimée automatiquement (2 signalements)'
-      : '🗑️ تم حذف الموقف تلقائياً (بلاغان)');
-    return;
+      ? `⚠️ Signalé (${newCount}/2 — suppression auto à 2)`
+      : `⚠️ تم الإبلاغ (${newCount}/2 — يُحذف تلقائياً عند 2)`);
+  } catch (error) {
+    console.error(error);
+    showToast(currentLang === 'fr' ? 'Erreur Firebase' : 'خطأ في Firebase');
   }
-
-  save();
-  renderAll();
-  showToast(currentLang === 'fr'
-    ? `⚠️ Signalé (${s.reportCount}/2 — suppression auto à 2)`
-    : `⚠️ تم الإبلاغ (${s.reportCount}/2 — يُحذف تلقائياً عند 2)`);
 }
 
-function addComment(id) {
+async function addComment(id) {
   const input = document.getElementById(`commentInput_${id}`);
   if (!input) return;
   const text = input.value.trim();
   if (!text) return;
   const s = situations.find(x => x.id === id);
   if (!s) return;
-  s.comments = s.comments || [];
-  s.comments.push({ text, createdAt: new Date().toISOString() });
-  save();
-  showToast(currentLang === 'fr' ? '💬 Commentaire ajouté' : '💬 تمت إضافة التعليق');
-  openDetail(id);
+  const newComments = [...(s.comments || []), { text, createdAt: new Date().toISOString() }];
+
+  try {
+    await updateDoc(doc(db, "signalements", id), { comments: newComments });
+    showToast(currentLang === 'fr' ? '💬 Commentaire ajouté' : '💬 تمت إضافة التعليق');
+    openDetail(id);
+  } catch (error) {
+    console.error(error);
+    showToast(currentLang === 'fr' ? 'Erreur Firebase' : 'خطأ في Firebase');
+  }
 }
 
 function goToRoute(lat, lng) {
@@ -626,3 +687,29 @@ if (situations.length === 0) {
   situations = demos;
   save();
 }
+
+// ── EXPOSITION GLOBALE ───────────────────────
+// app.js est maintenant chargé en tant que <script type="module">
+// (obligatoire pour pouvoir faire `import { db } from './firebase.js'`).
+// Mais dans un module, les fonctions ne sont PAS automatiquement
+// accessibles depuis les attributs onclick="..." du HTML (ni depuis
+// le HTML généré dynamiquement par innerHTML). Sans cette section,
+// chaque clic aurait affiché une erreur "xxx is not defined" dans
+// la console et les boutons ne fonctionnaient pas.
+window.acceptPrivacy = acceptPrivacy;
+window.updateAcceptBtn = updateAcceptBtn;
+window.openSignalModal = openSignalModal;
+window.closeSignalModal = closeSignalModal;
+window.selectType = selectType;
+window.getLocation = getLocation;
+window.submitSignal = submitSignal;
+window.toggleLang = toggleLang;
+window.toggleResolve = toggleResolve;
+window.resolveFromMap = resolveFromMap;
+window.reportSituation = reportSituation;
+window.addComment = addComment;
+window.goToRoute = goToRoute;
+window.openDetail = openDetail;
+window.setFilter = setFilter;
+window.switchMapStyle = switchMapStyle;
+window.closeOnOverlay = closeOnOverlay;
