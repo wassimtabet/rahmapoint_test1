@@ -377,7 +377,7 @@ function getLocation() {
   );
 }
 
-function submitSignal() {
+async function submitSignal() {
   const desc = document.getElementById('descInput').value.trim();
   const contact = document.getElementById('contactInput').value.trim();
   const locText = document.getElementById('locationInput').value.trim();
@@ -405,13 +405,41 @@ function submitSignal() {
     comments: [],
   };
 
+  try {
+
+  await addDoc(
+    collection(db, "signalements"),
+    newS
+  );
+
   situations.push(newS);
   save();
+
   closeSignalModal();
-  if (tempMarker) { map.removeLayer(tempMarker); tempMarker = null; }
+
+  if (tempMarker) {
+    map.removeLayer(tempMarker);
+    tempMarker = null;
+  }
+
   renderAll();
-  map.setView([newS.lat, newS.lng], 14);
-  showToast(currentLang === 'fr' ? '✓ Situation publiée !' : '✓ تم نشر الموقف!');
+
+  showToast(
+    currentLang === 'fr'
+      ? '✓ Signalement enregistré dans Firebase'
+      : '✓ تم حفظ البلاغ في Firebase'
+  );
+
+} catch (error) {
+
+  console.error(error);
+
+  showToast(
+    currentLang === 'fr'
+      ? 'Erreur Firebase'
+      : 'خطأ في Firebase'
+  );
+
 }
 
 // ── ACTIONS ───────────────────────────────────
