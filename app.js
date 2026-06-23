@@ -6,7 +6,7 @@
 // Connexion à firebase.js + Firestore (db était utilisé plus bas
 // sans jamais être importé : c'était le bug principal qui empêchait
 // toute communication avec Firebase).
-import { db } from './firebase.js';
+import { db, auth } from './firebase.js';
 import {
   collection,
   addDoc,
@@ -17,14 +17,17 @@ import {
   query,
   orderBy,
 } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
+import {
+  GoogleAuthProvider,
+  signInWithPopup,
+  signOut,
+  onAuthStateChanged,
+} from "https://www.gstatic.com/firebasejs/10.13.0/firebase-auth.js";
 
 // ── STATE ──────────────────────────────────
-// Les situations viennent maintenant de Firestore en temps réel
-// (voir listenToFirestore ci-dessous). localStorage sert uniquement
-// de cache local pour un affichage instantané avant que Firestore
-// ait répondu.
 let situations = JSON.parse(localStorage.getItem('rahmapoint_situations') || '[]');
 let currentLang = 'fr';
+let currentUser = null;   // ← utilisateur Firebase connecté (null = déconnecté)
 let currentFilter = 'all';
 let selectedType = '';
 let tempLatLng = null;
@@ -67,9 +70,10 @@ function acceptPrivacy() {
 document.addEventListener('DOMContentLoaded', () => {
   checkPrivacyAccepted();
   initMap();
-  renderAll();    // affichage immédiat avec le cache local (localStorage)
+  initAuth();           // démarre l'écoute de l'état de connexion Google
+  renderAll();
   updateStats();
-  listenToFirestore(); // puis on se synchronise en temps réel avec Firebase
+  listenToFirestore();
 });
 
 // ── FIRESTORE SYNC ────────────────────────────
@@ -89,6 +93,83 @@ function listenToFirestore() {
         ? '⚠️ Connexion à Firebase impossible — données locales affichées'
         : '⚠️ تعذّر الاتصال بـ Firebase — تُعرض البيانات المحلية');
     });
+  } catch (error) {
+    console.error(error);
+  }
+}
+
+// ── AUTH GOOGLE ───────────────────────────────
+// onAuthStateChanged est appelé automatiquement par Firebase dès que
+// l'état de connexion change (connexion, déconnexion, rechargement de page).
+// C'est lui qui maintient currentUser à jour et met à jour l'interface.
+
+function initAuth() {
+  onAuthStateChanged(auth, (user) => {
+    currentUser = user;
+    renderAuthZone();
+  });
+}
+
+function renderAuthZone() {
+  const zone = document.getElementById('authZone');
+  if (!zone) return;
+
+  if (currentUser) {
+    // ── Utilisateur connecté ───────────────────
+    const photo = currentUser.photoURL
+      ? `<img src="${currentUser.photoURL}" alt="avatar" class="user-avatar" referrerpolicy="no-referrer">`
+      : `<div class="user-avatar user-avatar-placeholder">${currentUser.displayName?.[0] ?? '?'}</div>`;
+
+    zone.innerHTML = `
+      <div class="user-info">
+        ${photo}
+        <span class="user-name">${currentUser.displayName || currentUser.email}</span>
+      </div>
+      <button class="btn-logout" onclick="logoutUser()">
+        <span data-fr="Déconnexion" data-ar="تسجيل خروج">Déconnexion</span>
+      </button>`;
+  } else {
+    // ── Utilisateur déconnecté ─────────────────
+    zone.innerHTML = `
+      <button class="btn-google-login" onclick="loginWithGoogle()">
+        <svg width="18" height="18" viewBox="0 0 48 48" style="flex-shrink:0">
+          <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
+          <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
+          <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
+          <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.18 1.48-4.97 2.36-8.16 2.36-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
+        </svg>
+        <span data-fr="Continuer avec Google" data-ar="تسجيل الدخول بـ Google">Continuer avec Google</span>
+      </button>`;
+  }
+
+  // Appliquer la langue courante aux nouveaux éléments
+  applyLang(currentLang);
+}
+
+async function loginWithGoogle() {
+  try {
+    const provider = new GoogleAuthProvider();
+    // Forcer la sélection de compte même si déjà connecté
+    provider.setCustomParameters({ prompt: 'select_account' });
+    await signInWithPopup(auth, provider);
+    // onAuthStateChanged prend le relais : pas besoin de faire quoi que ce soit ici
+    showToast(currentLang === 'fr'
+      ? `✓ Bienvenue ${auth.currentUser?.displayName ?? ''} !`
+      : `✓ أهلاً ${auth.currentUser?.displayName ?? ''} !`);
+  } catch (error) {
+    if (error.code !== 'auth/popup-closed-by-user') {
+      console.error(error);
+      showToast(currentLang === 'fr'
+        ? '❌ Connexion annulée ou échouée'
+        : '❌ فشل تسجيل الدخول أو تم إلغاؤه');
+    }
+  }
+}
+
+async function logoutUser() {
+  try {
+    await signOut(auth);
+    showToast(currentLang === 'fr' ? '👋 Déconnecté' : '👋 تم تسجيل الخروج');
   } catch (error) {
     console.error(error);
   }
@@ -383,6 +464,14 @@ function openDetail(id) {
 
 // ── SIGNAL MODAL ──────────────────────────────
 function openSignalModal() {
+  // ── Vérification connexion ──────────────────
+  // Si l'utilisateur n'est pas connecté, on affiche le modal de connexion
+  // à la place du formulaire de signalement.
+  if (!currentUser) {
+    document.getElementById('loginRequiredModal').classList.add('active');
+    return;
+  }
+
   selectedType = '';
   tempLatLng = null;
   document.getElementById('descInput').value = '';
@@ -440,7 +529,15 @@ async function submitSignal() {
   // ET laissait Firestore en créer un autre : les deux ne
   // correspondaient jamais, ce qui cassait resolve/report/comment
   // sur les signalements envoyés.
+  // Double vérification côté logique (au cas où openSignalModal serait
+  // contourné depuis la carte ou un autre chemin)
+  if (!currentUser) {
+    document.getElementById('loginRequiredModal').classList.add('active');
+    return;
+  }
+
   const newS = {
+    // ── Données du signalement ─────────────────
     type: selectedType,
     description: desc,
     location: locText,
@@ -451,6 +548,11 @@ async function submitSignal() {
     resolved: false,
     reportCount: 0,
     comments: [],
+    // ── Données de l'auteur (objectif 7) ───────
+    userId:    currentUser.uid,
+    userName:  currentUser.displayName  || '',
+    userEmail: currentUser.email        || '',
+    userPhoto: currentUser.photoURL     || '',
   };
 
   try {
@@ -696,7 +798,9 @@ if (situations.length === 0) {
 // le HTML généré dynamiquement par innerHTML). Sans cette section,
 // chaque clic aurait affiché une erreur "xxx is not defined" dans
 // la console et les boutons ne fonctionnaient pas.
-window.acceptPrivacy = acceptPrivacy;
+window.loginWithGoogle = loginWithGoogle;
+window.logoutUser      = logoutUser;
+window.acceptPrivacy   = acceptPrivacy;
 window.updateAcceptBtn = updateAcceptBtn;
 window.openSignalModal = openSignalModal;
 window.closeSignalModal = closeSignalModal;
