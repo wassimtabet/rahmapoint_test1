@@ -817,3 +817,159 @@ body.ar .checkbox-label { font-family: 'Amiri', serif; font-size: 0.95rem; }
   :root { --header-h: 70px; }
   .logo-ar { font-size: 1rem; }
 }
+
+/* ==========================================
+   RAHMAPOINT — Auth Google (styles ajoutés)
+   ========================================== */
+
+/* ── Zone auth dans le header ─────────────── */
+.auth-zone {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.auth-skeleton {
+  width: 140px;
+  height: 36px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(255,255,255,.08) 25%, rgba(255,255,255,.18) 50%, rgba(255,255,255,.08) 75%);
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.4s infinite;
+}
+@keyframes skeleton-shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* ── Bouton "Continuer avec Google" ──────── */
+.btn-google-login {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.45rem 1rem;
+  border-radius: 999px;
+  border: 1.5px solid rgba(255,255,255,.35);
+  background: rgba(255,255,255,.10);
+  color: #fff;
+  font-size: 0.82rem;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background .2s, border-color .2s, transform .15s;
+  backdrop-filter: blur(4px);
+}
+.btn-google-login:hover {
+  background: rgba(255,255,255,.22);
+  border-color: rgba(255,255,255,.6);
+  transform: translateY(-1px);
+}
+.btn-google-login:active { transform: translateY(0); }
+
+/* Variante grande dans le modal */
+.btn-google-login--large {
+  padding: 0.75rem 1.6rem;
+  font-size: 1rem;
+  border: 1.5px solid #dadce0;
+  background: #fff;
+  color: #3c4043;
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0,0,0,.12);
+  margin: 0.5rem 0;
+}
+.btn-google-login--large:hover {
+  background: #f8f9fa;
+  box-shadow: 0 2px 6px rgba(0,0,0,.15);
+  transform: translateY(-1px);
+}
+
+/* ── Info utilisateur connecté ───────────── */
+.user-info {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.user-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 2px solid rgba(255,255,255,.5);
+  flex-shrink: 0;
+}
+
+.user-avatar-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255,255,255,.25);
+  color: #fff;
+  font-weight: 700;
+  font-size: 0.9rem;
+}
+
+.user-name {
+  color: #fff;
+  font-size: 0.82rem;
+  font-weight: 500;
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Bouton Déconnexion ──────────────────── */
+.btn-logout {
+  padding: 0.35rem 0.8rem;
+  border-radius: 999px;
+  border: 1.5px solid rgba(255,255,255,.35);
+  background: transparent;
+  color: rgba(255,255,255,.8);
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: background .2s, color .2s;
+}
+.btn-logout:hover {
+  background: rgba(255,255,255,.15);
+  color: #fff;
+}
+
+/* ── Modal connexion requise ─────────────── */
+.modal-login-required {
+  max-width: 400px;
+  text-align: center;
+}
+
+.login-required-body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 0 1rem;
+}
+
+.login-required-icon {
+  font-size: 3rem;
+  line-height: 1;
+  margin-bottom: 0.25rem;
+}
+
+.login-required-msg {
+  color: #555;
+  font-size: 0.95rem;
+  line-height: 1.55;
+  max-width: 300px;
+}
+
+.login-required-note {
+  color: #999;
+  font-size: 0.78rem;
+}
+
+/* ── Responsive mobile ───────────────────── */
+@media (max-width: 500px) {
+  .user-name  { display: none; }          /* photo + déconnexion seulement */
+  .btn-google-login > span { display: none; } /* Google logo seulement en header */
+  .btn-google-login--large > span { display: inline; } /* mais texte dans le modal */
+}
