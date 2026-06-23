@@ -22,6 +22,13 @@
       </div>
       <div class="header-actions">
         <button class="lang-toggle" id="langToggle" onclick="toggleLang()">العربية</button>
+
+        <!-- Zone Auth : remplie dynamiquement par renderAuthZone() dans app.js -->
+        <div id="authZone" class="auth-zone">
+          <!-- Skeleton visible pendant le chargement de Firebase Auth -->
+          <div class="auth-skeleton"></div>
+        </div>
+
         <button class="btn-primary pulse" onclick="openSignalModal()">
           <span class="btn-icon">＋</span>
           <span data-fr="Signaler" data-ar="إضافة موقف">Signaler</span>
@@ -102,7 +109,7 @@
   <!-- FOOTER -->
   <footer class="footer">
     <div class="footer-logo">♡ RahmaPoint</div>
-    <p data-fr="Plateforme de solidarité communautaire — sans compte requis" data-ar="منصة التضامن المجتمعي — دون الحاجة لتسجيل">Plateforme de solidarité communautaire — sans compte requis</p>
+    <p data-fr="Plateforme de solidarité communautaire — connexion Google requise pour publier" data-ar="منصة التضامن المجتمعي — تسجيل الدخول بـ Google مطلوب للنشر">Plateforme de solidarité communautaire — connexion Google requise pour publier</p>
   </footer>
 
   <!-- MODAL: SIGNALER -->
@@ -159,6 +166,50 @@
     <div class="modal modal-detail">
       <button class="modal-close" onclick="document.getElementById('detailModal').classList.remove('active')">✕</button>
       <div id="detailContent"></div>
+    </div>
+  </div>
+
+  <!-- MODAL : CONNEXION REQUISE ─────────────────────────────────────
+       Affiché quand l'utilisateur clique sur "Signaler" sans être connecté.
+  ────────────────────────────────────────────────────────────────── -->
+  <div class="modal-overlay" id="loginRequiredModal"
+       onclick="closeOnOverlay(event, 'loginRequiredModal')">
+    <div class="modal modal-login-required">
+      <button class="modal-close"
+              onclick="document.getElementById('loginRequiredModal').classList.remove('active')">✕</button>
+
+      <div class="login-required-body">
+        <div class="login-required-icon">🔐</div>
+
+        <h2 class="modal-title">
+          <span data-fr="Connexion requise" data-ar="تسجيل الدخول مطلوب">Connexion requise</span>
+        </h2>
+
+        <p class="login-required-msg">
+          <span data-fr="Pour publier un signalement sur RahmaPoint, vous devez être connecté avec votre compte Google."
+                data-ar="لنشر بلاغ على RahmaPoint، يجب عليك تسجيل الدخول بحسابك على Google.">
+            Pour publier un signalement sur RahmaPoint, vous devez être connecté avec votre compte Google.
+          </span>
+        </p>
+
+        <!-- Bouton Google (même style que dans le header) -->
+        <button class="btn-google-login btn-google-login--large" onclick="loginWithGoogle(); document.getElementById('loginRequiredModal').classList.remove('active')">
+          <svg width="20" height="20" viewBox="0 0 48 48">
+            <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
+            <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
+            <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
+            <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.18 1.48-4.97 2.36-8.16 2.36-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
+          </svg>
+          <span data-fr="Continuer avec Google" data-ar="تسجيل الدخول بـ Google">Continuer avec Google</span>
+        </button>
+
+        <p class="login-required-note">
+          <span data-fr="La connexion est gratuite et sécurisée via Google."
+                data-ar="تسجيل الدخول مجاني وآمن عبر Google.">
+            La connexion est gratuite et sécurisée via Google.
+          </span>
+        </p>
+      </div>
     </div>
   </div>
 
@@ -277,4 +328,3 @@
   <script type="module" src="app.js"></script>
 </body>
 </html>
-      
