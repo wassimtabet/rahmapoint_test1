@@ -973,3 +973,121 @@ body.ar .checkbox-label { font-family: 'Amiri', serif; font-size: 0.95rem; }
   .btn-google-login > span { display: none; } /* Google logo seulement en header */
   .btn-google-login--large > span { display: inline; } /* mais texte dans le modal */
 }
+
+/* ==========================================
+   RAHMAPOINT — Confirmation de situation (v2)
+   ========================================== */
+
+/* ── Bouton "Confirmer cette situation" (sur les cartes) ─── */
+.btn-confirm {
+  display: block;
+  width: 100%;
+  margin-top: 10px;
+  padding: 9px 16px;
+  border: 2px solid var(--accent);
+  border-radius: 50px;
+  background: transparent;
+  color: var(--accent);
+  font-size: 0.82rem;
+  font-weight: 700;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s, opacity 0.2s, transform 0.1s;
+  text-align: center;
+}
+.btn-confirm:hover:not(:disabled) {
+  background: var(--accent);
+  color: #fff;
+  transform: translateY(-1px);
+}
+.btn-confirm.confirmed,
+.btn-confirm:disabled {
+  border-color: var(--accent-light);
+  color: var(--accent);
+  background: rgba(91,138,91,0.10);
+  cursor: not-allowed;
+  opacity: 0.7;
+  transform: none;
+}
+
+/* ── Bouton "Confirmer" dans le modal détail ─── */
+.btn-confirm-detail {
+  display: block;
+  width: 100%;
+  margin: 14px 0 0;
+  padding: 12px 16px;
+  border: 2px solid var(--accent);
+  border-radius: 12px;
+  background: transparent;
+  color: var(--accent);
+  font-size: 0.92rem;
+  font-weight: 700;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s, opacity 0.2s, transform 0.1s;
+  text-align: center;
+}
+.btn-confirm-detail:hover:not(:disabled) {
+  background: var(--accent);
+  color: #fff;
+  transform: translateY(-1px);
+}
+.btn-confirm-detail.confirmed,
+.btn-confirm-detail:disabled {
+  border-color: var(--accent-light);
+  color: var(--accent);
+  background: rgba(91,138,91,0.10);
+  cursor: not-allowed;
+  opacity: 0.7;
+  transform: none;
+}
+
+/* ── Compteur de confirmations sur les cartes ─── */
+.confirm-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.76rem;
+  font-weight: 700;
+  color: var(--accent);
+  background: rgba(91,138,91,0.12);
+  border: 1px solid var(--accent-light);
+  border-radius: 50px;
+  padding: 3px 10px;
+  margin: 6px 0 4px;
+}
+.confirm-count::before { content: '✓'; }
+
+/* ── Compteur dans le modal détail ─── */
+.confirm-count-detail {
+  display: inline-block;
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+/* ── Badge confirmations dans le popup carte ─── */
+.popup-confirms {
+  font-size: 0.74rem;
+  color: var(--accent);
+  font-weight: 700;
+  margin: 4px 0 8px;
+  background: rgba(91,138,91,0.10);
+  border-radius: 6px;
+  padding: 3px 8px;
+  display: inline-block;
+}
+
+/* ── Badge expiration sur les cartes ─── */
+.expiry-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #D35400;
+  background: rgba(211,84,0,0.10);
+  border: 1px solid rgba(211,84,0,0.25);
+  border-radius: 50px;
+  padding: 2px 8px;
+}
