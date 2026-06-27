@@ -1,11 +1,7 @@
 /* ==========================================
-   RAHMAPOINT — app.js (corrigé)
+   RAHMAPOINT — app.js (v2 — Confirmation + Expiration 5j + Auth obligatoire)
    ========================================== */
 
-// ── FIREBASE ──────────────────────────────
-// Connexion à firebase.js + Firestore (db était utilisé plus bas
-// sans jamais être importé : c'était le bug principal qui empêchait
-// toute communication avec Firebase).
 import { db, auth } from './firebase.js';
 import {
   collection,
@@ -16,6 +12,8 @@ import {
   onSnapshot,
   query,
   orderBy,
+  arrayUnion,
+  Timestamp,
 } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
 import {
   GoogleAuthProvider,
@@ -27,14 +25,14 @@ import {
 // ── STATE ──────────────────────────────────
 let situations = JSON.parse(localStorage.getItem('rahmapoint_situations') || '[]');
 let currentLang = 'fr';
-let currentUser = null;   // ← utilisateur Firebase connecté (null = déconnecté)
+let currentUser = null;
 let currentFilter = 'all';
 let selectedType = '';
 let tempLatLng = null;
 let map, markersLayer;
 
-// Default center: Sétif, Algeria
 const DEFAULT_CENTER = [36.19, 5.41];
+const EXPIRATION_DAYS = 5;
 
 // ── TYPE CONFIG ─────────────────────────────
 const typeConfig = {
@@ -52,7 +50,6 @@ function checkPrivacyAccepted() {
   if (localStorage.getItem(PRIVACY_KEY) === 'yes') {
     document.getElementById('privacyModal').classList.remove('active');
   }
-  // else modal stays active (it starts with class active in HTML)
 }
 
 function updateAcceptBtn() {
@@ -70,22 +67,37 @@ function acceptPrivacy() {
 document.addEventListener('DOMContentLoaded', () => {
   checkPrivacyAccepted();
   initMap();
-  initAuth();           // démarre l'écoute de l'état de connexion Google
+  initAuth();
   renderAll();
   updateStats();
   listenToFirestore();
 });
 
+// ── AUTO-EXPIRATION 5 JOURS ──────────────────
+async function purgeExpiredSituations(docs) {
+  const now = Date.now();
+  const limitMs = EXPIRATION_DAYS * 24 * 60 * 60 * 1000;
+  for (const s of docs) {
+    const created = new Date(s.createdAt).getTime();
+    if (now - created > limitMs) {
+      try {
+        await deleteDoc(doc(db, "signalements", s.id));
+        console.log(`[RahmaPoint] Situation ${s.id} supprimée (> ${EXPIRATION_DAYS} jours)`);
+      } catch (e) {
+        console.warn("Erreur suppression expirée :", e);
+      }
+    }
+  }
+}
+
 // ── FIRESTORE SYNC ────────────────────────────
-// Écoute en temps réel de la collection "signalements" : dès qu'un
-// signalement est ajouté/modifié/supprimé (par vous ou par un autre
-// visiteur), la liste et la carte se mettent à jour automatiquement.
 function listenToFirestore() {
   try {
     const q = query(collection(db, "signalements"), orderBy("createdAt", "asc"));
     onSnapshot(q, (snapshot) => {
       situations = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
       localStorage.setItem('rahmapoint_situations', JSON.stringify(situations));
+      purgeExpiredSituations(situations);
       renderAll();
     }, (error) => {
       console.error("Erreur de synchronisation Firestore :", error);
@@ -99,14 +111,11 @@ function listenToFirestore() {
 }
 
 // ── AUTH GOOGLE ───────────────────────────────
-// onAuthStateChanged est appelé automatiquement par Firebase dès que
-// l'état de connexion change (connexion, déconnexion, rechargement de page).
-// C'est lui qui maintient currentUser à jour et met à jour l'interface.
-
 function initAuth() {
   onAuthStateChanged(auth, (user) => {
     currentUser = user;
     renderAuthZone();
+    renderAll(); // re-render pour mettre à jour les boutons selon état auth
   });
 }
 
@@ -115,7 +124,6 @@ function renderAuthZone() {
   if (!zone) return;
 
   if (currentUser) {
-    // ── Utilisateur connecté ───────────────────
     const photo = currentUser.photoURL
       ? `<img src="${currentUser.photoURL}" alt="avatar" class="user-avatar" referrerpolicy="no-referrer">`
       : `<div class="user-avatar user-avatar-placeholder">${currentUser.displayName?.[0] ?? '?'}</div>`;
@@ -129,7 +137,6 @@ function renderAuthZone() {
         <span data-fr="Déconnexion" data-ar="تسجيل خروج">Déconnexion</span>
       </button>`;
   } else {
-    // ── Utilisateur déconnecté ─────────────────
     zone.innerHTML = `
       <button class="btn-google-login" onclick="loginWithGoogle()">
         <svg width="18" height="18" viewBox="0 0 48 48" style="flex-shrink:0">
@@ -142,17 +149,14 @@ function renderAuthZone() {
       </button>`;
   }
 
-  // Appliquer la langue courante aux nouveaux éléments
   applyLang(currentLang);
 }
 
 async function loginWithGoogle() {
   try {
     const provider = new GoogleAuthProvider();
-    // Forcer la sélection de compte même si déjà connecté
     provider.setCustomParameters({ prompt: 'select_account' });
     await signInWithPopup(auth, provider);
-    // onAuthStateChanged prend le relais : pas besoin de faire quoi que ce soit ici
     showToast(currentLang === 'fr'
       ? `✓ Bienvenue ${auth.currentUser?.displayName ?? ''} !`
       : `✓ أهلاً ${auth.currentUser?.displayName ?? ''} !`);
@@ -203,22 +207,18 @@ let hintHidden = false;
 function initMap() {
   map = L.map('map', { zoomControl: true }).setView(DEFAULT_CENTER, 12);
 
-  // Load default style
   const def = tileLayers.carto;
   currentTileLayer = L.tileLayer(def.url, { attribution: def.attr, maxZoom: 19 }).addTo(map);
 
   markersLayer = L.layerGroup().addTo(map);
 
-  // ── Click on map: if modal open → pick location, else → open modal pre-filled
   map.on('click', (e) => {
     const modalOpen = document.getElementById('signalModal').classList.contains('active');
 
-    // Always update coordinates
     tempLatLng = e.latlng;
     const coordStr = `${e.latlng.lat.toFixed(5)}, ${e.latlng.lng.toFixed(5)}`;
     document.getElementById('locationInput').value = coordStr;
 
-    // Hide the hint after first click
     if (!hintHidden) {
       hintHidden = true;
       const hint = document.getElementById('mapHint');
@@ -226,14 +226,11 @@ function initMap() {
     }
 
     if (modalOpen) {
-      // Just update location field + show temp marker
       showTempMarker(e.latlng);
       showToast(currentLang === 'fr' ? '📍 Position mise à jour' : '📍 تم تحديث الموقع');
     } else {
-      // Open signal modal pre-filled with clicked position
       openSignalModal();
       showTempMarker(e.latlng);
-      // Small delay so modal animation plays first
       setTimeout(() => {
         document.getElementById('locationInput').value = coordStr;
         showToast(currentLang === 'fr'
@@ -265,7 +262,6 @@ function switchMapStyle(style, btn) {
   if (currentTileLayer) map.removeLayer(currentTileLayer);
   const cfg = tileLayers[style];
   currentTileLayer = L.tileLayer(cfg.url, { attribution: cfg.attr, maxZoom: 19 }).addTo(map);
-  // Move tile layer below markers
   currentTileLayer.bringToBack();
 
   document.querySelectorAll('.style-btn').forEach(b => b.classList.remove('active'));
@@ -275,7 +271,6 @@ function switchMapStyle(style, btn) {
     ? `🗺 Style carte : ${style}`
     : `🗺 نمط الخريطة: ${style}`);
 }
-
 
 function renderMarkers() {
   markersLayer.clearLayers();
@@ -309,12 +304,17 @@ function buildPopupHTML(s) {
   const resolvedLabel = currentLang === 'fr' ? 'Résolu ✓' : 'تم الحل ✓';
   const detailLabel = currentLang === 'fr' ? 'Voir détail' : 'عرض التفاصيل';
   const resolveLabel = currentLang === 'fr' ? 'Marquer résolu' : 'تم الحل';
+  const confirmCount = (s.confirmedBy || []).length;
+  const confirmLabel = currentLang === 'fr'
+    ? `✓ Confirmé (${confirmCount})`
+    : `✓ مؤكد (${confirmCount})`;
 
   return `
     <div class="popup-inner">
       <div class="popup-type">${cfg.emoji} ${typeLabel}</div>
       <div class="popup-desc">${shortDesc}</div>
-      <button class="popup-btn" onclick="openDetail('${s.id}')"> ${detailLabel}</button>
+      ${confirmCount > 0 ? `<div class="popup-confirms">${confirmLabel}</div>` : ''}
+      <button class="popup-btn" onclick="openDetail('${s.id}')">${detailLabel}</button>
       ${!s.resolved
         ? `<button class="popup-btn green" onclick="resolveFromMap('${s.id}')">✓ ${resolveLabel}</button>`
         : `<span style="font-size:0.75rem;color:#5B8A5B;font-weight:700">${resolvedLabel}</span>`
@@ -352,6 +352,17 @@ function buildCard(s, delay) {
   const typeLabel = cfg[currentLang] || cfg.fr;
   const timeAgo = getTimeAgo(s.createdAt);
 
+  // ── Confirmation ──────────────────────────
+  const confirmedBy = s.confirmedBy || [];
+  const confirmCount = confirmedBy.length;
+  const alreadyConfirmed = currentUser && confirmedBy.includes(currentUser.uid);
+
+  const confirmBtnFr = alreadyConfirmed ? '✓ Déjà confirmé' : `✓ Confirmer cette situation`;
+  const confirmBtnAr = alreadyConfirmed ? '✓ تم التأكيد مسبقاً' : `✓ تأكيد هذا الموقف`;
+  const confirmCountLabel = confirmCount > 0
+    ? `<span class="confirm-count">${currentLang === 'fr' ? `${confirmCount} confirmation${confirmCount > 1 ? 's' : ''}` : `${confirmCount} تأكيد`}</span>`
+    : '';
+
   const card = document.createElement('div');
   card.className = `card${s.resolved ? ' resolved' : ''}`;
   card.style.animationDelay = `${delay * 0.07}s`;
@@ -366,6 +377,12 @@ function buildCard(s, delay) {
   const resolveAr = s.resolved ? 'تم الحل ✓' : 'وضع علامة محلول';
   const reportFr = 'Signaler'; const reportAr = 'إبلاغ';
 
+  // Expiration countdown
+  const daysLeft = getDaysLeft(s.createdAt);
+  const expiryLabel = daysLeft !== null
+    ? `<span class="expiry-badge" title="${currentLang === 'fr' ? 'Suppression automatique' : 'حذف تلقائي'}">⏳ ${daysLeft}j</span>`
+    : '';
+
   card.innerHTML = `
     <div class="card-header" style="background:${s.resolved ? '#5B8A5B' : cfg.color}">
       <span class="card-type">${cfg.emoji} ${typeLabel}</span>
@@ -375,10 +392,12 @@ function buildCard(s, delay) {
       <p class="card-desc">${s.description}</p>
       <div class="card-meta">
         <span>🕐 ${timeAgo}</span>
+        ${expiryLabel}
         ${s.location ? `<span>📍 ${s.location}</span>` : ''}
         ${s.contact ? `<span>📞 ${s.contact}</span>` : ''}
         ${s.reportCount > 0 ? `<span style="color:#C0392B">⚠️ ${s.reportCount}</span>` : ''}
       </div>
+      ${confirmCountLabel}
       <div class="card-actions">
         <button class="card-btn primary" onclick="openDetail('${s.id}')">
           ${currentLang === 'fr' ? detailFr : detailAr}
@@ -393,9 +412,51 @@ function buildCard(s, delay) {
           ⚠️ ${currentLang === 'fr' ? reportFr : reportAr}
         </button>
       </div>
+      <button
+        class="btn-confirm${alreadyConfirmed ? ' confirmed' : ''}"
+        onclick="confirmSituation('${s.id}')"
+        ${alreadyConfirmed ? 'disabled' : ''}
+      >
+        ${currentLang === 'fr' ? confirmBtnFr : confirmBtnAr}
+      </button>
     </div>`;
 
   return card;
+}
+
+// ── CONFIRMATION DE SITUATION ─────────────────
+async function confirmSituation(id) {
+  // 1. Vérification connexion
+  if (!currentUser) {
+    document.getElementById('loginRequiredModal').classList.add('active');
+    return;
+  }
+
+  const s = situations.find(x => x.id === id);
+  if (!s) return;
+
+  // 2. Vérification anti-doublon côté client (défense en profondeur)
+  const confirmedBy = s.confirmedBy || [];
+  if (confirmedBy.includes(currentUser.uid)) {
+    showToast(currentLang === 'fr'
+      ? '⚠️ Vous avez déjà confirmé cette situation'
+      : '⚠️ لقد أكدت هذا الموقف مسبقاً');
+    return;
+  }
+
+  try {
+    // 3. arrayUnion garantit l'unicité côté Firestore (sécurité serveur)
+    await updateDoc(doc(db, "signalements", id), {
+      confirmedBy: arrayUnion(currentUser.uid),
+    });
+
+    showToast(currentLang === 'fr'
+      ? '✓ Situation confirmée — merci !'
+      : '✓ تم تأكيد الموقف — شكراً!');
+  } catch (error) {
+    console.error("Erreur confirmation :", error);
+    showToast(currentLang === 'fr' ? '❌ Erreur Firebase' : '❌ خطأ في Firebase');
+  }
 }
 
 // ── DETAIL MODAL ─────────────────────────────
@@ -407,11 +468,20 @@ function openDetail(id) {
   map.closePopup();
 
   const comments = s.comments || [];
+  const confirmedBy = s.confirmedBy || [];
+  const confirmCount = confirmedBy.length;
+  const alreadyConfirmed = currentUser && confirmedBy.includes(currentUser.uid);
+
   const commentsHTML = comments.map(c => `
     <div class="comment-item">
       ${c.text}
       <div class="comment-time">${getTimeAgo(c.createdAt)}</div>
     </div>`).join('');
+
+  const confirmBtnFr = alreadyConfirmed ? '✓ Déjà confirmé' : '✓ Confirmer cette situation';
+  const confirmBtnAr = alreadyConfirmed ? '✓ تم التأكيد مسبقاً' : '✓ تأكيد هذا الموقف';
+
+  const daysLeft = getDaysLeft(s.createdAt);
 
   const content = `
     <div class="detail-header" style="background:${s.resolved ? '#5B8A5B' : cfg.color}">
@@ -431,11 +501,27 @@ function openDetail(id) {
       <div class="detail-value">${new Date(s.createdAt).toLocaleString(currentLang === 'ar' ? 'ar-DZ' : 'fr-DZ')}</div>
     </div>
     <div class="detail-section">
+      <div class="detail-label">${currentLang === 'fr' ? 'Expiration' : 'انتهاء الصلاحية'}</div>
+      <div class="detail-value">⏳ ${daysLeft !== null
+        ? (currentLang === 'fr' ? `Suppression dans ${daysLeft} jour(s)` : `يُحذف خلال ${daysLeft} يوم`)
+        : (currentLang === 'fr' ? 'Expiré' : 'منتهي الصلاحية')}</div>
+    </div>
+    <div class="detail-section">
       <div class="detail-label">${currentLang === 'fr' ? 'Statut' : 'الحالة'}</div>
       <div class="detail-value">${s.resolved
         ? `<span style="color:#5B8A5B;font-weight:700">${currentLang === 'fr' ? '✓ Situation résolue' : '✓ تم حل الموقف'}</span>`
         : `<span style="color:#C0392B">${currentLang === 'fr' ? '⏳ En attente d\'aide' : '⏳ بانتظار المساعدة'}</span>`
       }</div>
+    </div>
+    <div class="detail-section">
+      <div class="detail-label">${currentLang === 'fr' ? 'Confirmations terrain' : 'تأكيدات ميدانية'}</div>
+      <div class="detail-value">
+        <span class="confirm-count-detail">
+          ✓ ${confirmCount} ${currentLang === 'fr'
+            ? `personne${confirmCount > 1 ? 's ont' : ' a'} confirmé cette situation`
+            : `شخص أكّد وجود هذا الموقف`}
+        </span>
+      </div>
     </div>
     <div class="detail-actions">
       ${s.lat ? `<button class="card-btn green" onclick="goToRoute(${s.lat},${s.lng})">
@@ -449,6 +535,15 @@ function openDetail(id) {
       </button>
       <button class="card-btn gray" onclick="reportSituation('${s.id}')">⚠️</button>
     </div>
+
+    <button
+      class="btn-confirm-detail${alreadyConfirmed ? ' confirmed' : ''}"
+      onclick="confirmSituation('${s.id}')"
+      ${alreadyConfirmed ? 'disabled' : ''}
+    >
+      ${currentLang === 'fr' ? confirmBtnFr : confirmBtnAr}
+    </button>
+
     <div class="comments-section">
       <div class="comments-title">${currentLang === 'fr' ? `Commentaires (${comments.length})` : `التعليقات (${comments.length})`}</div>
       ${commentsHTML || `<p style="font-size:0.80rem;color:#999">${currentLang === 'fr' ? 'Aucun commentaire.' : 'لا توجد تعليقات.'}</p>`}
@@ -464,9 +559,6 @@ function openDetail(id) {
 
 // ── SIGNAL MODAL ──────────────────────────────
 function openSignalModal() {
-  // ── Vérification connexion ──────────────────
-  // Si l'utilisateur n'est pas connecté, on affiche le modal de connexion
-  // à la place du formulaire de signalement.
   if (!currentUser) {
     document.getElementById('loginRequiredModal').classList.add('active');
     return;
@@ -522,22 +614,12 @@ async function submitSignal() {
     showToast(currentLang === 'fr' ? '⚠️ Ajoutez une description' : '⚠️ أضف وصفاً');
     return;
   }
-
-  // On n'envoie pas de champ "id" : Firestore génère lui-même un
-  // identifiant unique pour le document (addDoc le retourne dans
-  // docRef.id). L'ancien code créait un id local avec Date.now()
-  // ET laissait Firestore en créer un autre : les deux ne
-  // correspondaient jamais, ce qui cassait resolve/report/comment
-  // sur les signalements envoyés.
-  // Double vérification côté logique (au cas où openSignalModal serait
-  // contourné depuis la carte ou un autre chemin)
   if (!currentUser) {
     document.getElementById('loginRequiredModal').classList.add('active');
     return;
   }
 
   const newS = {
-    // ── Données du signalement ─────────────────
     type: selectedType,
     description: desc,
     location: locText,
@@ -548,7 +630,7 @@ async function submitSignal() {
     resolved: false,
     reportCount: 0,
     comments: [],
-    // ── Données de l'auteur (objectif 7) ───────
+    confirmedBy: [],       // ← nouveau champ : tableau des UIDs ayant confirmé
     userId:    currentUser.uid,
     userName:  currentUser.displayName  || '',
     userEmail: currentUser.email        || '',
@@ -557,46 +639,25 @@ async function submitSignal() {
 
   try {
     await addDoc(collection(db, "signalements"), newS);
-    // Pas besoin de pousser manuellement dans "situations" ni d'appeler
-    // save() ici : listenToFirestore() (onSnapshot) reçoit automatiquement
-    // le nouveau document et met à jour l'affichage pour tout le monde.
-
     closeSignalModal();
-
-    if (tempMarker) {
-      map.removeLayer(tempMarker);
-      tempMarker = null;
-  }
-
-  renderAll();
-
-  showToast(
-    currentLang === 'fr'
+    if (tempMarker) { map.removeLayer(tempMarker); tempMarker = null; }
+    renderAll();
+    showToast(currentLang === 'fr'
       ? '✓ Signalement enregistré dans Firebase'
-      : '✓ تم حفظ البلاغ في Firebase'
-  );
-
-} catch (error) {
-
-  console.error(error);
-
-  showToast(
-    currentLang === 'fr'
-      ? 'Erreur Firebase'
-      : 'خطأ في Firebase'
-  );
-
+      : '✓ تم حفظ البلاغ في Firebase');
+  } catch (error) {
+    console.error(error);
+    showToast(currentLang === 'fr' ? 'Erreur Firebase' : 'خطأ في Firebase');
+  }
 }
-}   
-// ── ACTIONS ───────────────────────────────────
-// Avant, ces fonctions modifiaient seulement le tableau local "situations"
-// et appelaient save() (localStorage) : les changements n'étaient donc
-// JAMAIS envoyés à Firebase, et un autre visiteur ne les voyait jamais.
-// Elles écrivent maintenant directement dans Firestore ; c'est ensuite
-// listenToFirestore() (onSnapshot) qui met à jour l'affichage pour tout
-// le monde, y compris vous-même.
 
+// ── ACTIONS ───────────────────────────────────
 async function toggleResolve(id) {
+  // Auth obligatoire
+  if (!currentUser) {
+    document.getElementById('loginRequiredModal').classList.add('active');
+    return;
+  }
   const s = situations.find(x => x.id === id);
   if (!s) return;
   const newResolved = !s.resolved;
@@ -618,12 +679,16 @@ function resolveFromMap(id) {
 }
 
 async function reportSituation(id) {
+  // Auth obligatoire
+  if (!currentUser) {
+    document.getElementById('loginRequiredModal').classList.add('active');
+    return;
+  }
   const s = situations.find(x => x.id === id);
   if (!s) return;
   const newCount = (s.reportCount || 0) + 1;
 
   try {
-    // Auto-suppression si 2 signalements de fausse information
     if (newCount >= 2) {
       await deleteDoc(doc(db, "signalements", id));
       document.getElementById('detailModal').classList.remove('active');
@@ -632,7 +697,6 @@ async function reportSituation(id) {
         : '🗑️ تم حذف الموقف تلقائياً (بلاغان)');
       return;
     }
-
     await updateDoc(doc(db, "signalements", id), { reportCount: newCount });
     showToast(currentLang === 'fr'
       ? `⚠️ Signalé (${newCount}/2 — suppression auto à 2)`
@@ -644,6 +708,10 @@ async function reportSituation(id) {
 }
 
 async function addComment(id) {
+  if (!currentUser) {
+    document.getElementById('loginRequiredModal').classList.add('active');
+    return;
+  }
   const input = document.getElementById(`commentInput_${id}`);
   if (!input) return;
   const text = input.value.trim();
@@ -697,12 +765,17 @@ function toggleLang() {
   const btn = document.getElementById('langToggle');
   btn.textContent = currentLang === 'fr' ? 'العربية' : 'Français';
 
-  // Update all data-fr / data-ar elements (inclut le modal confidentialité)
   document.querySelectorAll('[data-fr][data-ar]').forEach(el => {
     el.textContent = currentLang === 'ar' ? el.dataset.ar : el.dataset.fr;
   });
 
   renderAll();
+}
+
+function applyLang(lang) {
+  document.querySelectorAll('[data-fr][data-ar]').forEach(el => {
+    el.textContent = lang === 'ar' ? el.dataset.ar : el.dataset.fr;
+  });
 }
 
 // ── MODALS ────────────────────────────────────
@@ -739,6 +812,15 @@ function getTimeAgo(isoString) {
   return `Il y a ${days}j`;
 }
 
+function getDaysLeft(isoString) {
+  const created = new Date(isoString).getTime();
+  const elapsed = Date.now() - created;
+  const limitMs = EXPIRATION_DAYS * 24 * 60 * 60 * 1000;
+  const remaining = limitMs - elapsed;
+  if (remaining <= 0) return null;
+  return Math.ceil(remaining / (24 * 60 * 60 * 1000));
+}
+
 function save() {
   localStorage.setItem('rahmapoint_situations', JSON.stringify(situations));
 }
@@ -752,12 +834,9 @@ if (situations.length === 0) {
       description: 'Famille de 5 personnes sans nourriture depuis 2 jours. Besoin urgent.',
       location: 'Rue Didouche Mourad, Sétif',
       contact: '0555 12 34 56',
-      lat: 36.1914,
-      lng: 5.4108,
+      lat: 36.1914, lng: 5.4108,
       createdAt: new Date(Date.now() - 3600000 * 3).toISOString(),
-      resolved: false,
-      reportCount: 0,
-      comments: [{ text: 'Je peux apporter de la nourriture ce soir.', createdAt: new Date(Date.now() - 1800000).toISOString() }],
+      resolved: false, reportCount: 0, comments: [], confirmedBy: [],
     },
     {
       id: '2',
@@ -765,12 +844,9 @@ if (situations.length === 0) {
       description: 'Personne âgée nécessitant un accompagnement médical. Pas de moyen de transport.',
       location: 'Cité El Hidhab, Sétif',
       contact: '0666 98 76 54',
-      lat: 36.1972,
-      lng: 5.4001,
+      lat: 36.1972, lng: 5.4001,
       createdAt: new Date(Date.now() - 3600000 * 7).toISOString(),
-      resolved: true,
-      reportCount: 0,
-      comments: [],
+      resolved: true, reportCount: 0, comments: [], confirmedBy: [],
     },
     {
       id: '3',
@@ -778,12 +854,9 @@ if (situations.length === 0) {
       description: 'Vêtements chauds pour enfants 4-8 ans recherchés. Hiver difficile.',
       location: 'Quartier Bazerdjemane, Sétif',
       contact: '',
-      lat: 36.1843,
-      lng: 5.4223,
+      lat: 36.1843, lng: 5.4223,
       createdAt: new Date(Date.now() - 3600000 * 24).toISOString(),
-      resolved: false,
-      reportCount: 0,
-      comments: [],
+      resolved: false, reportCount: 0, comments: [], confirmedBy: [],
     },
   ];
   situations = demos;
@@ -791,29 +864,23 @@ if (situations.length === 0) {
 }
 
 // ── EXPOSITION GLOBALE ───────────────────────
-// app.js est maintenant chargé en tant que <script type="module">
-// (obligatoire pour pouvoir faire `import { db } from './firebase.js'`).
-// Mais dans un module, les fonctions ne sont PAS automatiquement
-// accessibles depuis les attributs onclick="..." du HTML (ni depuis
-// le HTML généré dynamiquement par innerHTML). Sans cette section,
-// chaque clic aurait affiché une erreur "xxx is not defined" dans
-// la console et les boutons ne fonctionnaient pas.
-window.loginWithGoogle = loginWithGoogle;
-window.logoutUser      = logoutUser;
-window.acceptPrivacy   = acceptPrivacy;
-window.updateAcceptBtn = updateAcceptBtn;
-window.openSignalModal = openSignalModal;
-window.closeSignalModal = closeSignalModal;
-window.selectType = selectType;
-window.getLocation = getLocation;
-window.submitSignal = submitSignal;
-window.toggleLang = toggleLang;
-window.toggleResolve = toggleResolve;
-window.resolveFromMap = resolveFromMap;
-window.reportSituation = reportSituation;
-window.addComment = addComment;
-window.goToRoute = goToRoute;
-window.openDetail = openDetail;
-window.setFilter = setFilter;
-window.switchMapStyle = switchMapStyle;
-window.closeOnOverlay = closeOnOverlay;
+window.loginWithGoogle    = loginWithGoogle;
+window.logoutUser         = logoutUser;
+window.acceptPrivacy      = acceptPrivacy;
+window.updateAcceptBtn    = updateAcceptBtn;
+window.openSignalModal    = openSignalModal;
+window.closeSignalModal   = closeSignalModal;
+window.selectType         = selectType;
+window.getLocation        = getLocation;
+window.submitSignal       = submitSignal;
+window.toggleLang         = toggleLang;
+window.toggleResolve      = toggleResolve;
+window.resolveFromMap     = resolveFromMap;
+window.reportSituation    = reportSituation;
+window.addComment         = addComment;
+window.goToRoute          = goToRoute;
+window.openDetail         = openDetail;
+window.setFilter          = setFilter;
+window.switchMapStyle     = switchMapStyle;
+window.closeOnOverlay     = closeOnOverlay;
+window.confirmSituation   = confirmSituation;   // ← nouveau
