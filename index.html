@@ -83,6 +83,22 @@
   <!-- MAP CONTAINER -->
   <div class="map-wrapper">
     <div id="map"></div>
+    <!-- Barre de recherche sur la carte -->
+    <div class="map-search-wrapper" id="mapSearchWrapper">
+      <div class="map-search-inner">
+        <span class="map-search-icon">🔍</span>
+        <input
+          type="text"
+          id="mapSearchInput"
+          placeholder="Rechercher une ville, adresse, quartier…"
+          autocomplete="off"
+          spellcheck="false"
+          maxlength="100"
+        />
+        <button id="mapSearchClear" title="Effacer">✕</button>
+      </div>
+      <div class="map-search-results" id="mapSearchResults"></div>
+    </div>
     <!-- Style switcher -->
     <div class="map-style-switcher">
       <button class="style-btn active" data-style="carto" onclick="switchMapStyle('carto', this)" title="Carto (défaut)">🗺</button>
