@@ -1,50 +1,96 @@
-/* ==========================================
-   RAHMAPOINT — app.js (v2 — Confirmation + Expiration 5j + Auth obligatoire)
-   ========================================== */
+/*
+ * RahmaPoint — app.js
+ * v3 : sécurité renforcée + barre de recherche carte
+ */
 
 import { db, auth } from './firebase.js';
 import {
-  collection,
-  addDoc,
-  doc,
-  updateDoc,
-  deleteDoc,
-  onSnapshot,
-  query,
-  orderBy,
-  arrayUnion,
-  Timestamp,
+  collection, addDoc, doc, updateDoc, deleteDoc,
+  onSnapshot, query, orderBy, arrayUnion,
 } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
 import {
-  GoogleAuthProvider,
-  signInWithPopup,
-  signOut,
-  onAuthStateChanged,
+  GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged,
 } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-auth.js";
 
-// ── STATE ──────────────────────────────────
-let situations = JSON.parse(localStorage.getItem('rahmapoint_situations') || '[]');
-let currentLang = 'fr';
-let currentUser = null;
-let currentFilter = 'all';
-let selectedType = '';
-let tempLatLng = null;
-let map, markersLayer;
+// ─── Configuration ───────────────────────────────────────────────────────────
 
-const DEFAULT_CENTER = [36.19, 5.41];
 const EXPIRATION_DAYS = 5;
+const DEFAULT_CENTER  = [36.19, 5.41];
+const PRIVACY_KEY     = 'rahmapoint_privacy_accepted';
 
-// ── TYPE CONFIG ─────────────────────────────
-const typeConfig = {
+const VALID_TYPES = new Set(['nourriture', 'medical', 'vetement', 'abri', 'autre']);
+
+const TYPE_CONFIG = {
   nourriture: { emoji: '🍞', color: '#C0392B', fr: 'Nourriture', ar: 'طعام' },
-  medical:    { emoji: '🏥', color: '#8E44AD', fr: 'Médical',    ar: 'طبي' },
+  medical:    { emoji: '🏥', color: '#8E44AD', fr: 'Médical',    ar: 'طبي'  },
   vetement:   { emoji: '👕', color: '#2980B9', fr: 'Vêtement',   ar: 'ملابس' },
   abri:       { emoji: '🏠', color: '#D35400', fr: 'Abri',       ar: 'مأوى' },
-  autre:      { emoji: '💬', color: '#27AE60', fr: 'Autre',       ar: 'أخرى' },
+  autre:      { emoji: '💬', color: '#27AE60', fr: 'Autre',      ar: 'أخرى' },
 };
 
-// ── PRIVACY / TERMS ──────────────────────────
-const PRIVACY_KEY = 'rahmapoint_privacy_accepted';
+const TILE_LAYERS = {
+  carto:     { url: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',  attr: '© CARTO © OSM' },
+  satellite: { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', attr: '© Esri' },
+  dark:      { url: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',             attr: '© CARTO © OSM' },
+  topo:      { url: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',                          attr: '© OpenTopoMap © OSM' },
+};
+
+// ─── State ───────────────────────────────────────────────────────────────────
+
+let situations  = [];
+let currentLang = 'fr';
+let currentUser = null;
+let activeFilter = 'all';
+let selectedType  = '';
+let tempLatLng    = null;
+let map, markersLayer, currentTileLayer, tempMarker;
+let searchDebounceTimer = null;
+let hintHidden = false;
+
+// ─── Security helpers ─────────────────────────────────────────────────────────
+
+// Échapper tout caractère HTML avant injection dans le DOM
+function esc(str) {
+  if (str == null) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#x27;');
+}
+
+// Valider les données avant envoi à Firestore
+function validateSignal(type, description, contact) {
+  if (!VALID_TYPES.has(type))           return 'Type invalide.';
+  if (!description || description.length < 10) return currentLang === 'fr'
+    ? '⚠️ Description trop courte (10 caractères min)'
+    : '⚠️ الوصف قصير جداً (10 أحرف على الأقل)';
+  if (description.length > 500)         return currentLang === 'fr'
+    ? '⚠️ Description trop longue (500 caractères max)'
+    : '⚠️ الوصف طويل جداً (500 حرف كحد أقصى)';
+  if (contact && contact.length > 50)   return currentLang === 'fr'
+    ? '⚠️ Contact trop long'
+    : '⚠️ معلومات الاتصال طويلة جداً';
+  return null; // valide
+}
+
+// ─── Init ─────────────────────────────────────────────────────────────────────
+
+document.addEventListener('DOMContentLoaded', () => {
+  // Charger le cache local pendant que Firestore se connecte
+  try {
+    situations = JSON.parse(localStorage.getItem('rahmapoint_situations') || '[]');
+  } catch (_) { situations = []; }
+
+  checkPrivacyAccepted();
+  initMap();
+  initSearchBar();
+  initAuth();
+  renderAll();
+});
+
+// ─── Politique de confidentialité ────────────────────────────────────────────
 
 function checkPrivacyAccepted() {
   if (localStorage.getItem(PRIVACY_KEY) === 'yes') {
@@ -53,8 +99,8 @@ function checkPrivacyAccepted() {
 }
 
 function updateAcceptBtn() {
-  const checked = document.getElementById('acceptCheck').checked;
-  document.getElementById('acceptBtn').disabled = !checked;
+  document.getElementById('acceptBtn').disabled =
+    !document.getElementById('acceptCheck').checked;
 }
 
 function acceptPrivacy() {
@@ -63,59 +109,52 @@ function acceptPrivacy() {
   showToast(currentLang === 'fr' ? '✓ Bienvenue sur RahmaPoint !' : '✓ مرحباً بك في رحمة بوينت!');
 }
 
-// ── INIT ────────────────────────────────────
-document.addEventListener('DOMContentLoaded', () => {
-  checkPrivacyAccepted();
-  initMap();
-  initAuth();
-  renderAll();
-  updateStats();
-  listenToFirestore();
-});
+// ─── Firestore ────────────────────────────────────────────────────────────────
 
-// ── AUTO-EXPIRATION 5 JOURS ──────────────────
-async function purgeExpiredSituations(docs) {
-  const now = Date.now();
-  const limitMs = EXPIRATION_DAYS * 24 * 60 * 60 * 1000;
-  for (const s of docs) {
-    const created = new Date(s.createdAt).getTime();
-    if (now - created > limitMs) {
+function listenToFirestore() {
+  const q = query(collection(db, 'signalements'), orderBy('createdAt', 'asc'));
+  onSnapshot(q,
+    (snapshot) => {
+      situations = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+      localStorage.setItem('rahmapoint_situations', JSON.stringify(situations));
+      purgeExpired();
+      renderAll();
+    },
+    (err) => {
+      console.error('Firestore sync error:', err);
+      showToast(currentLang === 'fr'
+        ? '⚠️ Connexion Firebase impossible — données locales affichées'
+        : '⚠️ تعذّر الاتصال — البيانات المحلية معروضة');
+    }
+  );
+}
+
+// Supprime côté Firestore les signalements trop anciens
+async function purgeExpired() {
+  const cutoff = Date.now() - EXPIRATION_DAYS * 86400000;
+  for (const s of situations) {
+    if (new Date(s.createdAt).getTime() < cutoff) {
       try {
-        await deleteDoc(doc(db, "signalements", s.id));
-        console.log(`[RahmaPoint] Situation ${s.id} supprimée (> ${EXPIRATION_DAYS} jours)`);
+        await deleteDoc(doc(db, 'signalements', s.id));
       } catch (e) {
-        console.warn("Erreur suppression expirée :", e);
+        console.warn('Purge failed:', s.id, e.message);
       }
     }
   }
 }
 
-// ── FIRESTORE SYNC ────────────────────────────
-function listenToFirestore() {
-  try {
-    const q = query(collection(db, "signalements"), orderBy("createdAt", "asc"));
-    onSnapshot(q, (snapshot) => {
-      situations = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
-      localStorage.setItem('rahmapoint_situations', JSON.stringify(situations));
-      purgeExpiredSituations(situations);
-      renderAll();
-    }, (error) => {
-      console.error("Erreur de synchronisation Firestore :", error);
-      showToast(currentLang === 'fr'
-        ? '⚠️ Connexion à Firebase impossible — données locales affichées'
-        : '⚠️ تعذّر الاتصال بـ Firebase — تُعرض البيانات المحلية');
-    });
-  } catch (error) {
-    console.error(error);
-  }
-}
+// ─── Auth ─────────────────────────────────────────────────────────────────────
 
-// ── AUTH GOOGLE ───────────────────────────────
 function initAuth() {
   onAuthStateChanged(auth, (user) => {
     currentUser = user;
     renderAuthZone();
-    renderAll(); // re-render pour mettre à jour les boutons selon état auth
+    renderAll();
+    // Démarrer l'écoute Firestore une fois qu'on sait si l'utilisateur est connecté
+    if (!window._firestoreListening) {
+      window._firestoreListening = true;
+      listenToFirestore();
+    }
   });
 }
 
@@ -124,14 +163,14 @@ function renderAuthZone() {
   if (!zone) return;
 
   if (currentUser) {
-    const photo = currentUser.photoURL
-      ? `<img src="${currentUser.photoURL}" alt="avatar" class="user-avatar" referrerpolicy="no-referrer">`
-      : `<div class="user-avatar user-avatar-placeholder">${currentUser.displayName?.[0] ?? '?'}</div>`;
+    const avatarHTML = currentUser.photoURL
+      ? `<img src="${esc(currentUser.photoURL)}" alt="avatar" class="user-avatar" referrerpolicy="no-referrer">`
+      : `<div class="user-avatar user-avatar-placeholder">${esc(currentUser.displayName?.[0] ?? '?')}</div>`;
 
     zone.innerHTML = `
       <div class="user-info">
-        ${photo}
-        <span class="user-name">${currentUser.displayName || currentUser.email}</span>
+        ${avatarHTML}
+        <span class="user-name">${esc(currentUser.displayName || currentUser.email)}</span>
       </div>
       <button class="btn-logout" onclick="logoutUser()">
         <span data-fr="Déconnexion" data-ar="تسجيل خروج">Déconnexion</span>
@@ -158,79 +197,46 @@ async function loginWithGoogle() {
     provider.setCustomParameters({ prompt: 'select_account' });
     await signInWithPopup(auth, provider);
     showToast(currentLang === 'fr'
-      ? `✓ Bienvenue ${auth.currentUser?.displayName ?? ''} !`
-      : `✓ أهلاً ${auth.currentUser?.displayName ?? ''} !`);
-  } catch (error) {
-    if (error.code !== 'auth/popup-closed-by-user') {
-      console.error(error);
-      showToast(currentLang === 'fr'
-        ? '❌ Connexion annulée ou échouée'
-        : '❌ فشل تسجيل الدخول أو تم إلغاؤه');
+      ? `✓ Bienvenue ${esc(auth.currentUser?.displayName ?? '')} !`
+      : `✓ أهلاً ${esc(auth.currentUser?.displayName ?? '')} !`);
+  } catch (err) {
+    if (err.code !== 'auth/popup-closed-by-user') {
+      console.error(err);
+      showToast(currentLang === 'fr' ? '❌ Connexion échouée' : '❌ فشل تسجيل الدخول');
     }
   }
 }
 
 async function logoutUser() {
-  try {
-    await signOut(auth);
-    showToast(currentLang === 'fr' ? '👋 Déconnecté' : '👋 تم تسجيل الخروج');
-  } catch (error) {
-    console.error(error);
-  }
+  await signOut(auth).catch(console.error);
+  showToast(currentLang === 'fr' ? '👋 Déconnecté' : '👋 تم تسجيل الخروج');
 }
 
-// ── MAP TILE LAYERS ──────────────────────────
-const tileLayers = {
-  carto: {
-    url: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
-    attr: '© <a href="https://carto.com/">CARTO</a> © <a href="https://www.openstreetmap.org/">OSM</a>',
-  },
-  satellite: {
-    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-    attr: '© <a href="https://www.esri.com/">Esri</a> — Satellite imagery',
-  },
-  dark: {
-    url: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-    attr: '© <a href="https://carto.com/">CARTO</a> © <a href="https://www.openstreetmap.org/">OSM</a>',
-  },
-  topo: {
-    url: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
-    attr: '© <a href="https://opentopomap.org/">OpenTopoMap</a> © <a href="https://www.openstreetmap.org/">OSM</a>',
-  },
-};
+// ─── Carte ────────────────────────────────────────────────────────────────────
 
-let currentTileLayer = null;
-let tempMarker = null;
-let hintHidden = false;
-
-// ── MAP ─────────────────────────────────────
 function initMap() {
   map = L.map('map', { zoomControl: true }).setView(DEFAULT_CENTER, 12);
-
-  const def = tileLayers.carto;
+  const def = TILE_LAYERS.carto;
   currentTileLayer = L.tileLayer(def.url, { attribution: def.attr, maxZoom: 19 }).addTo(map);
-
   markersLayer = L.layerGroup().addTo(map);
 
   map.on('click', (e) => {
-    const modalOpen = document.getElementById('signalModal').classList.contains('active');
-
+    const isModalOpen = document.getElementById('signalModal').classList.contains('active');
     tempLatLng = e.latlng;
     const coordStr = `${e.latlng.lat.toFixed(5)}, ${e.latlng.lng.toFixed(5)}`;
     document.getElementById('locationInput').value = coordStr;
 
     if (!hintHidden) {
       hintHidden = true;
-      const hint = document.getElementById('mapHint');
-      if (hint) hint.classList.add('hidden');
+      document.getElementById('mapHint')?.classList.add('hidden');
     }
 
-    if (modalOpen) {
-      showTempMarker(e.latlng);
+    showTempMarker(e.latlng);
+
+    if (isModalOpen) {
       showToast(currentLang === 'fr' ? '📍 Position mise à jour' : '📍 تم تحديث الموقع');
     } else {
       openSignalModal();
-      showTempMarker(e.latlng);
       setTimeout(() => {
         document.getElementById('locationInput').value = coordStr;
         showToast(currentLang === 'fr'
@@ -245,12 +251,7 @@ function showTempMarker(latlng) {
   if (tempMarker) map.removeLayer(tempMarker);
   const icon = L.divIcon({
     className: '',
-    html: `<div class="temp-marker-anim" style="
-      width:18px;height:18px;border-radius:50%;
-      background:var(--primary,#C0392B);
-      border:3px solid #fff;
-      box-shadow:0 2px 10px rgba(192,57,43,0.5);
-    "></div>`,
+    html: '<div class="temp-marker-anim"></div>',
     iconSize: [18, 18],
     iconAnchor: [9, 9],
   });
@@ -258,71 +259,138 @@ function showTempMarker(latlng) {
 }
 
 function switchMapStyle(style, btn) {
-  if (!tileLayers[style]) return;
+  if (!TILE_LAYERS[style]) return;
   if (currentTileLayer) map.removeLayer(currentTileLayer);
-  const cfg = tileLayers[style];
+  const cfg = TILE_LAYERS[style];
   currentTileLayer = L.tileLayer(cfg.url, { attribution: cfg.attr, maxZoom: 19 }).addTo(map);
   currentTileLayer.bringToBack();
-
   document.querySelectorAll('.style-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
-
-  showToast(currentLang === 'fr'
-    ? `🗺 Style carte : ${style}`
-    : `🗺 نمط الخريطة: ${style}`);
+  showToast(`🗺 ${style}`);
 }
+
+// ─── Barre de recherche (Nominatim / OpenStreetMap) ──────────────────────────
+
+function initSearchBar() {
+  const wrapper = document.getElementById('mapSearchWrapper');
+  if (!wrapper) return;
+
+  const input    = wrapper.querySelector('#mapSearchInput');
+  const results  = wrapper.querySelector('#mapSearchResults');
+  const clearBtn = wrapper.querySelector('#mapSearchClear');
+
+  if (!input || !results) return;
+
+  input.addEventListener('input', () => {
+    const q = input.value.trim();
+    clearBtn.style.display = q ? 'flex' : 'none';
+    clearTimeout(searchDebounceTimer);
+    if (q.length < 2) { results.innerHTML = ''; results.classList.remove('open'); return; }
+    searchDebounceTimer = setTimeout(() => geocodeSearch(q, results), 400);
+  });
+
+  // Fermer la liste si on clique ailleurs
+  document.addEventListener('click', (e) => {
+    if (!wrapper.contains(e.target)) {
+      results.innerHTML = '';
+      results.classList.remove('open');
+    }
+  });
+
+  clearBtn.addEventListener('click', () => {
+    input.value = '';
+    results.innerHTML = '';
+    results.classList.remove('open');
+    clearBtn.style.display = 'none';
+    input.focus();
+  });
+}
+
+async function geocodeSearch(query, resultsEl) {
+  try {
+    const url = `https://nominatim.openstreetmap.org/search?format=json&limit=5&addressdetails=1&q=${encodeURIComponent(query)}&countrycodes=dz`;
+    const res  = await fetch(url, { headers: { 'Accept-Language': currentLang } });
+    if (!res.ok) throw new Error('Nominatim error');
+    const data = await res.json();
+
+    if (!data.length) {
+      resultsEl.innerHTML = `<div class="search-no-result">${currentLang === 'fr' ? 'Aucun résultat' : 'لا توجد نتائج'}</div>`;
+      resultsEl.classList.add('open');
+      return;
+    }
+
+    resultsEl.innerHTML = data.map(place => {
+      const name = esc(place.display_name);
+      return `<div class="search-result-item" data-lat="${place.lat}" data-lon="${place.lon}" tabindex="0">
+        <span class="search-pin">📍</span>
+        <span class="search-name">${name}</span>
+      </div>`;
+    }).join('');
+    resultsEl.classList.add('open');
+
+    resultsEl.querySelectorAll('.search-result-item').forEach(item => {
+      const go = () => {
+        const lat = parseFloat(item.dataset.lat);
+        const lon = parseFloat(item.dataset.lon);
+        map.setView([lat, lon], 15, { animate: true });
+        resultsEl.innerHTML = '';
+        resultsEl.classList.remove('open');
+        document.getElementById('mapSearchInput').value = item.querySelector('.search-name').textContent;
+        document.getElementById('mapSearchClear').style.display = 'flex';
+      };
+      item.addEventListener('click', go);
+      item.addEventListener('keydown', (e) => e.key === 'Enter' && go());
+    });
+  } catch (err) {
+    console.error('Geocode error:', err);
+    resultsEl.innerHTML = `<div class="search-no-result">⚠️ ${currentLang === 'fr' ? 'Erreur de recherche' : 'خطأ في البحث'}</div>`;
+    resultsEl.classList.add('open');
+  }
+}
+
+// ─── Marqueurs ────────────────────────────────────────────────────────────────
 
 function renderMarkers() {
   markersLayer.clearLayers();
-  const filtered = getFiltered();
-  filtered.forEach(s => addMarker(s));
+  getFiltered().forEach(addMarker);
 }
 
 function addMarker(s) {
-  const cfg = typeConfig[s.type] || typeConfig.autre;
+  const cfg   = TYPE_CONFIG[s.type] || TYPE_CONFIG.autre;
   const color = s.resolved ? '#5B8A5B' : cfg.color;
 
   const icon = L.divIcon({
     className: '',
-    html: `<div class="rahma-marker" style="background:${color}">
-             <div class="rahma-marker-inner">${cfg.emoji}</div>
-           </div>`,
-    iconSize: [36, 36],
-    iconAnchor: [18, 36],
-    popupAnchor: [0, -38],
+    html: `<div class="rahma-marker" style="background:${color}"><div class="rahma-marker-inner">${cfg.emoji}</div></div>`,
+    iconSize: [36, 36], iconAnchor: [18, 36], popupAnchor: [0, -38],
   });
 
-  const marker = L.marker([s.lat, s.lng], { icon });
-  marker.bindPopup(buildPopupHTML(s), { maxWidth: 260 });
-  marker.addTo(markersLayer);
+  L.marker([s.lat, s.lng], { icon })
+    .bindPopup(buildPopupHTML(s), { maxWidth: 260 })
+    .addTo(markersLayer);
 }
 
 function buildPopupHTML(s) {
-  const cfg = typeConfig[s.type] || typeConfig.autre;
-  const typeLabel = cfg[currentLang] || cfg.fr;
-  const shortDesc = s.description.length > 80 ? s.description.slice(0, 80) + '…' : s.description;
-  const resolvedLabel = currentLang === 'fr' ? 'Résolu ✓' : 'تم الحل ✓';
-  const detailLabel = currentLang === 'fr' ? 'Voir détail' : 'عرض التفاصيل';
-  const resolveLabel = currentLang === 'fr' ? 'Marquer résolu' : 'تم الحل';
+  const cfg          = TYPE_CONFIG[s.type] || TYPE_CONFIG.autre;
+  const label        = cfg[currentLang] || cfg.fr;
+  const shortDesc    = esc(s.description.length > 80 ? s.description.slice(0, 80) + '…' : s.description);
   const confirmCount = (s.confirmedBy || []).length;
-  const confirmLabel = currentLang === 'fr'
-    ? `✓ Confirmé (${confirmCount})`
-    : `✓ مؤكد (${confirmCount})`;
+  const fr = currentLang === 'fr';
 
   return `
     <div class="popup-inner">
-      <div class="popup-type">${cfg.emoji} ${typeLabel}</div>
+      <div class="popup-type">${cfg.emoji} ${label}</div>
       <div class="popup-desc">${shortDesc}</div>
-      ${confirmCount > 0 ? `<div class="popup-confirms">${confirmLabel}</div>` : ''}
-      <button class="popup-btn" onclick="openDetail('${s.id}')">${detailLabel}</button>
-      ${!s.resolved
-        ? `<button class="popup-btn green" onclick="resolveFromMap('${s.id}')">✓ ${resolveLabel}</button>`
-        : `<span style="font-size:0.75rem;color:#5B8A5B;font-weight:700">${resolvedLabel}</span>`
-      }
+      ${confirmCount > 0 ? `<div class="popup-confirms">✓ ${fr ? `${confirmCount} confirmation${confirmCount > 1 ? 's' : ''}` : `${confirmCount} تأكيد`}</div>` : ''}
+      <button class="popup-btn" onclick="openDetail('${esc(s.id)}')">${fr ? 'Voir détail' : 'عرض التفاصيل'}</button>
+      ${s.resolved
+        ? `<span class="popup-resolved">${fr ? 'Résolu ✓' : 'تم الحل ✓'}</span>`
+        : `<button class="popup-btn green" onclick="resolveFromMap('${esc(s.id)}')">✓ ${fr ? 'Marquer résolu' : 'تم الحل'}</button>`}
     </div>`;
 }
 
-// ── RENDER ───────────────────────────────────
+// ─── Rendu ────────────────────────────────────────────────────────────────────
+
 function renderAll() {
   renderCards();
   renderMarkers();
@@ -330,245 +398,169 @@ function renderAll() {
 }
 
 function renderCards() {
-  const grid = document.getElementById('cardsGrid');
+  const grid  = document.getElementById('cardsGrid');
   const empty = document.getElementById('emptyState');
-  const filtered = getFiltered();
+  const items = getFiltered().slice().reverse();
 
   grid.innerHTML = '';
-  if (filtered.length === 0) {
-    empty.style.display = 'block';
-    return;
-  }
-  empty.style.display = 'none';
-
-  filtered.slice().reverse().forEach((s, i) => {
-    const card = buildCard(s, i);
-    grid.appendChild(card);
-  });
+  empty.style.display = items.length ? 'none' : 'block';
+  items.forEach((s, i) => grid.appendChild(buildCard(s, i)));
 }
 
 function buildCard(s, delay) {
-  const cfg = typeConfig[s.type] || typeConfig.autre;
-  const typeLabel = cfg[currentLang] || cfg.fr;
+  const cfg    = TYPE_CONFIG[s.type] || TYPE_CONFIG.autre;
+  const fr     = currentLang === 'fr';
+  const label  = cfg[currentLang] || cfg.fr;
   const timeAgo = getTimeAgo(s.createdAt);
+  const daysLeft = getDaysLeft(s.createdAt);
 
-  // ── Confirmation ──────────────────────────
-  const confirmedBy = s.confirmedBy || [];
-  const confirmCount = confirmedBy.length;
+  const confirmedBy      = s.confirmedBy || [];
+  const confirmCount     = confirmedBy.length;
   const alreadyConfirmed = currentUser && confirmedBy.includes(currentUser.uid);
-
-  const confirmBtnFr = alreadyConfirmed ? '✓ Déjà confirmé' : `✓ Confirmer cette situation`;
-  const confirmBtnAr = alreadyConfirmed ? '✓ تم التأكيد مسبقاً' : `✓ تأكيد هذا الموقف`;
-  const confirmCountLabel = confirmCount > 0
-    ? `<span class="confirm-count">${currentLang === 'fr' ? `${confirmCount} confirmation${confirmCount > 1 ? 's' : ''}` : `${confirmCount} تأكيد`}</span>`
-    : '';
 
   const card = document.createElement('div');
   card.className = `card${s.resolved ? ' resolved' : ''}`;
   card.style.animationDelay = `${delay * 0.07}s`;
 
-  const statusFr = s.resolved ? 'Résolu' : 'En attente';
-  const statusAr = s.resolved ? 'تم الحل' : 'بانتظار';
-  const status = currentLang === 'fr' ? statusFr : statusAr;
-
-  const detailFr = 'Détail'; const detailAr = 'تفاصيل';
-  const routeFr = 'Itinéraire'; const routeAr = 'الطريق';
-  const resolveFr = s.resolved ? 'Résolu ✓' : 'Marquer résolu';
-  const resolveAr = s.resolved ? 'تم الحل ✓' : 'وضع علامة محلول';
-  const reportFr = 'Signaler'; const reportAr = 'إبلاغ';
-
-  // Expiration countdown
-  const daysLeft = getDaysLeft(s.createdAt);
-  const expiryLabel = daysLeft !== null
-    ? `<span class="expiry-badge" title="${currentLang === 'fr' ? 'Suppression automatique' : 'حذف تلقائي'}">⏳ ${daysLeft}j</span>`
-    : '';
-
+  // On utilise esc() sur toutes les données utilisateur avant injection
   card.innerHTML = `
     <div class="card-header" style="background:${s.resolved ? '#5B8A5B' : cfg.color}">
-      <span class="card-type">${cfg.emoji} ${typeLabel}</span>
-      <span class="card-badge ${s.resolved ? 'resolved-badge' : ''}">${status}</span>
+      <span class="card-type">${cfg.emoji} ${label}</span>
+      <span class="card-badge${s.resolved ? ' resolved-badge' : ''}">${fr ? (s.resolved ? 'Résolu' : 'En attente') : (s.resolved ? 'تم الحل' : 'بانتظار')}</span>
     </div>
     <div class="card-body">
-      <p class="card-desc">${s.description}</p>
+      <p class="card-desc">${esc(s.description)}</p>
       <div class="card-meta">
         <span>🕐 ${timeAgo}</span>
-        ${expiryLabel}
-        ${s.location ? `<span>📍 ${s.location}</span>` : ''}
-        ${s.contact ? `<span>📞 ${s.contact}</span>` : ''}
-        ${s.reportCount > 0 ? `<span style="color:#C0392B">⚠️ ${s.reportCount}</span>` : ''}
+        ${daysLeft !== null ? `<span class="expiry-badge" title="${fr ? 'Expiration automatique' : 'حذف تلقائي'}">⏳ ${daysLeft}j</span>` : ''}
+        ${s.location ? `<span>📍 ${esc(s.location)}</span>` : ''}
+        ${s.contact  ? `<span>📞 ${esc(s.contact)}</span>`  : ''}
+        ${s.reportCount > 0 ? `<span class="report-count">⚠️ ${s.reportCount}</span>` : ''}
       </div>
-      ${confirmCountLabel}
+      ${confirmCount > 0 ? `<span class="confirm-count">✓ ${fr ? `${confirmCount} confirmation${confirmCount > 1 ? 's' : ''}` : `${confirmCount} تأكيد`}</span>` : ''}
       <div class="card-actions">
-        <button class="card-btn primary" onclick="openDetail('${s.id}')">
-          ${currentLang === 'fr' ? detailFr : detailAr}
+        <button class="card-btn primary" onclick="openDetail('${esc(s.id)}')">${fr ? 'Détail' : 'تفاصيل'}</button>
+        ${s.lat ? `<button class="card-btn gray" onclick="goToRoute(${s.lat},${s.lng})">🗺 ${fr ? 'Itinéraire' : 'الطريق'}</button>` : ''}
+        <button class="card-btn ${s.resolved ? 'gray' : 'green'}" onclick="toggleResolve('${esc(s.id)}')">
+          ${s.resolved ? (fr ? 'Résolu ✓' : 'تم الحل ✓') : (fr ? 'Marquer résolu' : 'وضع علامة محلول')}
         </button>
-        ${s.lat ? `<button class="card-btn gray" onclick="goToRoute(${s.lat},${s.lng})">
-          🗺 ${currentLang === 'fr' ? routeFr : routeAr}
-        </button>` : ''}
-        <button class="card-btn ${s.resolved ? 'gray' : 'green'}" onclick="toggleResolve('${s.id}')">
-          ${currentLang === 'fr' ? resolveFr : resolveAr}
-        </button>
-        <button class="card-btn gray" onclick="reportSituation('${s.id}')">
-          ⚠️ ${currentLang === 'fr' ? reportFr : reportAr}
-        </button>
+        <button class="card-btn gray" onclick="reportSituation('${esc(s.id)}')">⚠️ ${fr ? 'Signaler' : 'إبلاغ'}</button>
       </div>
-      <button
-        class="btn-confirm${alreadyConfirmed ? ' confirmed' : ''}"
-        onclick="confirmSituation('${s.id}')"
-        ${alreadyConfirmed ? 'disabled' : ''}
-      >
-        ${currentLang === 'fr' ? confirmBtnFr : confirmBtnAr}
+      <button class="btn-confirm${alreadyConfirmed ? ' confirmed' : ''}" onclick="confirmSituation('${esc(s.id)}')" ${alreadyConfirmed ? 'disabled' : ''}>
+        ${alreadyConfirmed ? (fr ? '✓ Déjà confirmé' : '✓ تم التأكيد مسبقاً') : (fr ? '✓ Confirmer cette situation' : '✓ تأكيد هذا الموقف')}
       </button>
     </div>`;
 
   return card;
 }
 
-// ── CONFIRMATION DE SITUATION ─────────────────
-async function confirmSituation(id) {
-  // 1. Vérification connexion
-  if (!currentUser) {
-    document.getElementById('loginRequiredModal').classList.add('active');
-    return;
-  }
+// ─── Modal détail ─────────────────────────────────────────────────────────────
 
-  const s = situations.find(x => x.id === id);
-  if (!s) return;
-
-  // 2. Vérification anti-doublon côté client (défense en profondeur)
-  const confirmedBy = s.confirmedBy || [];
-  if (confirmedBy.includes(currentUser.uid)) {
-    showToast(currentLang === 'fr'
-      ? '⚠️ Vous avez déjà confirmé cette situation'
-      : '⚠️ لقد أكدت هذا الموقف مسبقاً');
-    return;
-  }
-
-  try {
-    // 3. arrayUnion garantit l'unicité côté Firestore (sécurité serveur)
-    await updateDoc(doc(db, "signalements", id), {
-      confirmedBy: arrayUnion(currentUser.uid),
-    });
-
-    showToast(currentLang === 'fr'
-      ? '✓ Situation confirmée — merci !'
-      : '✓ تم تأكيد الموقف — شكراً!');
-  } catch (error) {
-    console.error("Erreur confirmation :", error);
-    showToast(currentLang === 'fr' ? '❌ Erreur Firebase' : '❌ خطأ في Firebase');
-  }
-}
-
-// ── DETAIL MODAL ─────────────────────────────
 function openDetail(id) {
   const s = situations.find(x => x.id === id);
   if (!s) return;
-  const cfg = typeConfig[s.type] || typeConfig.autre;
-  const typeLabel = cfg[currentLang] || cfg.fr;
   map.closePopup();
 
-  const comments = s.comments || [];
-  const confirmedBy = s.confirmedBy || [];
-  const confirmCount = confirmedBy.length;
-  const alreadyConfirmed = currentUser && confirmedBy.includes(currentUser.uid);
-
-  const commentsHTML = comments.map(c => `
-    <div class="comment-item">
-      ${c.text}
-      <div class="comment-time">${getTimeAgo(c.createdAt)}</div>
-    </div>`).join('');
-
-  const confirmBtnFr = alreadyConfirmed ? '✓ Déjà confirmé' : '✓ Confirmer cette situation';
-  const confirmBtnAr = alreadyConfirmed ? '✓ تم التأكيد مسبقاً' : '✓ تأكيد هذا الموقف';
-
+  const cfg    = TYPE_CONFIG[s.type] || TYPE_CONFIG.autre;
+  const fr     = currentLang === 'fr';
+  const label  = cfg[currentLang] || cfg.fr;
   const daysLeft = getDaysLeft(s.createdAt);
 
-  const content = `
+  const confirmedBy      = s.confirmedBy || [];
+  const confirmCount     = confirmedBy.length;
+  const alreadyConfirmed = currentUser && confirmedBy.includes(currentUser.uid);
+
+  const commentsHTML = (s.comments || []).map(c => `
+    <div class="comment-item">
+      <p>${esc(c.text)}</p>
+      <div class="comment-time">${getTimeAgo(c.createdAt)}</div>
+    </div>`).join('') || `<p class="no-comments">${fr ? 'Aucun commentaire.' : 'لا توجد تعليقات.'}</p>`;
+
+  document.getElementById('detailContent').innerHTML = `
     <div class="detail-header" style="background:${s.resolved ? '#5B8A5B' : cfg.color}">
-      <div class="detail-type">${cfg.emoji} ${typeLabel}</div>
-      <div class="detail-title">${s.description}</div>
-    </div>
-    ${s.location ? `<div class="detail-section">
-      <div class="detail-label">${currentLang === 'fr' ? 'Localisation' : 'الموقع'}</div>
-      <div class="detail-value">📍 ${s.location}</div>
-    </div>` : ''}
-    ${s.contact ? `<div class="detail-section">
-      <div class="detail-label">${currentLang === 'fr' ? 'Contact' : 'التواصل'}</div>
-      <div class="detail-value">📞 ${s.contact}</div>
-    </div>` : ''}
-    <div class="detail-section">
-      <div class="detail-label">${currentLang === 'fr' ? 'Signalé le' : 'أُبلغ في'}</div>
-      <div class="detail-value">${new Date(s.createdAt).toLocaleString(currentLang === 'ar' ? 'ar-DZ' : 'fr-DZ')}</div>
-    </div>
-    <div class="detail-section">
-      <div class="detail-label">${currentLang === 'fr' ? 'Expiration' : 'انتهاء الصلاحية'}</div>
-      <div class="detail-value">⏳ ${daysLeft !== null
-        ? (currentLang === 'fr' ? `Suppression dans ${daysLeft} jour(s)` : `يُحذف خلال ${daysLeft} يوم`)
-        : (currentLang === 'fr' ? 'Expiré' : 'منتهي الصلاحية')}</div>
-    </div>
-    <div class="detail-section">
-      <div class="detail-label">${currentLang === 'fr' ? 'Statut' : 'الحالة'}</div>
-      <div class="detail-value">${s.resolved
-        ? `<span style="color:#5B8A5B;font-weight:700">${currentLang === 'fr' ? '✓ Situation résolue' : '✓ تم حل الموقف'}</span>`
-        : `<span style="color:#C0392B">${currentLang === 'fr' ? '⏳ En attente d\'aide' : '⏳ بانتظار المساعدة'}</span>`
-      }</div>
-    </div>
-    <div class="detail-section">
-      <div class="detail-label">${currentLang === 'fr' ? 'Confirmations terrain' : 'تأكيدات ميدانية'}</div>
-      <div class="detail-value">
-        <span class="confirm-count-detail">
-          ✓ ${confirmCount} ${currentLang === 'fr'
-            ? `personne${confirmCount > 1 ? 's ont' : ' a'} confirmé cette situation`
-            : `شخص أكّد وجود هذا الموقف`}
-        </span>
-      </div>
-    </div>
-    <div class="detail-actions">
-      ${s.lat ? `<button class="card-btn green" onclick="goToRoute(${s.lat},${s.lng})">
-        🗺 ${currentLang === 'fr' ? 'Itinéraire' : 'الطريق'}
-      </button>` : ''}
-      <button class="card-btn ${s.resolved ? 'gray' : 'primary'}" onclick="toggleResolve('${s.id}'); document.getElementById('detailModal').classList.remove('active')">
-        ${s.resolved
-          ? (currentLang === 'fr' ? 'Rouvrir' : 'إعادة فتح')
-          : (currentLang === 'fr' ? '✓ Marquer résolu' : '✓ تم الحل')
-        }
-      </button>
-      <button class="card-btn gray" onclick="reportSituation('${s.id}')">⚠️</button>
+      <div class="detail-type">${cfg.emoji} ${label}</div>
+      <div class="detail-title">${esc(s.description)}</div>
     </div>
 
-    <button
-      class="btn-confirm-detail${alreadyConfirmed ? ' confirmed' : ''}"
-      onclick="confirmSituation('${s.id}')"
-      ${alreadyConfirmed ? 'disabled' : ''}
-    >
-      ${currentLang === 'fr' ? confirmBtnFr : confirmBtnAr}
+    ${s.location ? `
+    <div class="detail-section">
+      <div class="detail-label">${fr ? 'Localisation' : 'الموقع'}</div>
+      <div class="detail-value">📍 ${esc(s.location)}</div>
+    </div>` : ''}
+
+    ${s.contact ? `
+    <div class="detail-section">
+      <div class="detail-label">${fr ? 'Contact' : 'التواصل'}</div>
+      <div class="detail-value">📞 ${esc(s.contact)}</div>
+    </div>` : ''}
+
+    <div class="detail-section">
+      <div class="detail-label">${fr ? 'Signalé le' : 'أُبلغ في'}</div>
+      <div class="detail-value">${new Date(s.createdAt).toLocaleString(fr ? 'fr-DZ' : 'ar-DZ')}</div>
+    </div>
+
+    <div class="detail-section">
+      <div class="detail-label">${fr ? 'Expiration' : 'انتهاء الصلاحية'}</div>
+      <div class="detail-value">⏳ ${daysLeft !== null
+        ? (fr ? `Suppression dans ${daysLeft} jour(s)` : `يُحذف خلال ${daysLeft} يوم`)
+        : (fr ? 'Expiré' : 'منتهي الصلاحية')}</div>
+    </div>
+
+    <div class="detail-section">
+      <div class="detail-label">${fr ? 'Statut' : 'الحالة'}</div>
+      <div class="detail-value">${s.resolved
+        ? `<span style="color:#5B8A5B;font-weight:700">✓ ${fr ? 'Situation résolue' : 'تم حل الموقف'}</span>`
+        : `<span style="color:#C0392B">⏳ ${fr ? "En attente d'aide" : 'بانتظار المساعدة'}</span>`}</div>
+    </div>
+
+    <div class="detail-section">
+      <div class="detail-label">${fr ? 'Confirmations terrain' : 'تأكيدات ميدانية'}</div>
+      <div class="detail-value confirm-count-detail">
+        ✓ ${confirmCount} ${fr
+          ? `personne${confirmCount > 1 ? 's ont' : ' a'} confirmé`
+          : 'شخص أكّد وجود هذا الموقف'}
+      </div>
+    </div>
+
+    <div class="detail-actions">
+      ${s.lat ? `<button class="card-btn green" onclick="goToRoute(${s.lat},${s.lng})">🗺 ${fr ? 'Itinéraire' : 'الطريق'}</button>` : ''}
+      <button class="card-btn ${s.resolved ? 'gray' : 'primary'}"
+        onclick="toggleResolve('${esc(s.id)}'); document.getElementById('detailModal').classList.remove('active')">
+        ${s.resolved ? (fr ? 'Rouvrir' : 'إعادة فتح') : (fr ? '✓ Marquer résolu' : '✓ تم الحل')}
+      </button>
+      <button class="card-btn gray" onclick="reportSituation('${esc(s.id)}')">⚠️</button>
+    </div>
+
+    <button class="btn-confirm-detail${alreadyConfirmed ? ' confirmed' : ''}"
+      onclick="confirmSituation('${esc(s.id)}')" ${alreadyConfirmed ? 'disabled' : ''}>
+      ${alreadyConfirmed ? (fr ? '✓ Déjà confirmé' : '✓ تم التأكيد مسبقاً') : (fr ? '✓ Confirmer cette situation' : '✓ تأكيد هذا الموقف')}
     </button>
 
     <div class="comments-section">
-      <div class="comments-title">${currentLang === 'fr' ? `Commentaires (${comments.length})` : `التعليقات (${comments.length})`}</div>
-      ${commentsHTML || `<p style="font-size:0.80rem;color:#999">${currentLang === 'fr' ? 'Aucun commentaire.' : 'لا توجد تعليقات.'}</p>`}
+      <div class="comments-title">${fr ? `Commentaires (${(s.comments || []).length})` : `التعليقات (${(s.comments || []).length})`}</div>
+      ${commentsHTML}
       <div class="comment-input-row">
-        <input type="text" id="commentInput_${s.id}" placeholder="${currentLang === 'fr' ? 'Ajouter un commentaire…' : 'أضف تعليقاً…'}" />
-        <button onclick="addComment('${s.id}')">${currentLang === 'fr' ? 'Envoyer' : 'إرسال'}</button>
+        <input type="text" id="commentInput_${esc(s.id)}" maxlength="300"
+          placeholder="${fr ? 'Ajouter un commentaire…' : 'أضف تعليقاً…'}" />
+        <button onclick="addComment('${esc(s.id)}')">${fr ? 'Envoyer' : 'إرسال'}</button>
       </div>
     </div>`;
 
-  document.getElementById('detailContent').innerHTML = content;
   document.getElementById('detailModal').classList.add('active');
 }
 
-// ── SIGNAL MODAL ──────────────────────────────
+// ─── Modal signalement ────────────────────────────────────────────────────────
+
 function openSignalModal() {
   if (!currentUser) {
     document.getElementById('loginRequiredModal').classList.add('active');
     return;
   }
-
   selectedType = '';
-  tempLatLng = null;
-  document.getElementById('descInput').value = '';
+  tempLatLng   = null;
+  document.getElementById('descInput').value     = '';
   document.getElementById('locationInput').value = '';
-  document.getElementById('contactInput').value = '';
+  document.getElementById('contactInput').value  = '';
   document.querySelectorAll('.type-btn').forEach(b => b.classList.remove('selected'));
   document.getElementById('signalModal').classList.add('active');
 }
@@ -597,12 +589,17 @@ function getLocation() {
       map.setView([pos.coords.latitude, pos.coords.longitude], 15);
       showToast(currentLang === 'fr' ? '📍 Position détectée !' : '📍 تم تحديد الموقع!');
     },
-    () => showToast(currentLang === 'fr' ? 'Impossible de détecter la position' : 'تعذّر تحديد موقعك')
+    () => showToast(currentLang === 'fr' ? 'Position indisponible' : 'تعذّر تحديد موقعك')
   );
 }
 
 async function submitSignal() {
-  const desc = document.getElementById('descInput').value.trim();
+  if (!currentUser) {
+    document.getElementById('loginRequiredModal').classList.add('active');
+    return;
+  }
+
+  const desc    = document.getElementById('descInput').value.trim();
   const contact = document.getElementById('contactInput').value.trim();
   const locText = document.getElementById('locationInput').value.trim();
 
@@ -610,66 +607,62 @@ async function submitSignal() {
     showToast(currentLang === 'fr' ? '⚠️ Choisissez un type' : '⚠️ اختر نوعاً');
     return;
   }
-  if (!desc) {
-    showToast(currentLang === 'fr' ? '⚠️ Ajoutez une description' : '⚠️ أضف وصفاً');
-    return;
-  }
-  if (!currentUser) {
-    document.getElementById('loginRequiredModal').classList.add('active');
-    return;
-  }
 
-  const newS = {
-    type: selectedType,
+  const validationError = validateSignal(selectedType, desc, contact);
+  if (validationError) { showToast(validationError); return; }
+
+  const payload = {
+    type:        selectedType,
     description: desc,
-    location: locText,
-    contact,
-    lat: tempLatLng ? tempLatLng.lat : DEFAULT_CENTER[0] + (Math.random() - 0.5) * 0.02,
-    lng: tempLatLng ? tempLatLng.lng : DEFAULT_CENTER[1] + (Math.random() - 0.5) * 0.02,
-    createdAt: new Date().toISOString(),
-    resolved: false,
+    location:    locText.slice(0, 100),
+    contact:     contact.slice(0, 50),
+    lat:         tempLatLng ? tempLatLng.lat : DEFAULT_CENTER[0] + (Math.random() - 0.5) * 0.02,
+    lng:         tempLatLng ? tempLatLng.lng : DEFAULT_CENTER[1] + (Math.random() - 0.5) * 0.02,
+    createdAt:   new Date().toISOString(),
+    resolved:    false,
     reportCount: 0,
-    comments: [],
-    confirmedBy: [],       // ← nouveau champ : tableau des UIDs ayant confirmé
-    userId:    currentUser.uid,
-    userName:  currentUser.displayName  || '',
-    userEmail: currentUser.email        || '',
-    userPhoto: currentUser.photoURL     || '',
+    reportedBy:  [],       // anti-doublon pour les signalements abusifs
+    comments:    [],
+    confirmedBy: [],
+    userId:      currentUser.uid,
+    userName:    currentUser.displayName || '',
+    userPhoto:   currentUser.photoURL   || '',
   };
 
   try {
-    await addDoc(collection(db, "signalements"), newS);
+    await addDoc(collection(db, 'signalements'), payload);
     closeSignalModal();
     if (tempMarker) { map.removeLayer(tempMarker); tempMarker = null; }
-    renderAll();
-    showToast(currentLang === 'fr'
-      ? '✓ Signalement enregistré dans Firebase'
-      : '✓ تم حفظ البلاغ في Firebase');
-  } catch (error) {
-    console.error(error);
-    showToast(currentLang === 'fr' ? 'Erreur Firebase' : 'خطأ في Firebase');
+    showToast(currentLang === 'fr' ? '✓ Signalement publié' : '✓ تم نشر البلاغ');
+  } catch (err) {
+    console.error(err);
+    showToast(currentLang === 'fr' ? '❌ Erreur Firebase' : '❌ خطأ في Firebase');
   }
 }
 
-// ── ACTIONS ───────────────────────────────────
-async function toggleResolve(id) {
-  // Auth obligatoire
+// ─── Actions ──────────────────────────────────────────────────────────────────
+
+function requireAuth() {
   if (!currentUser) {
     document.getElementById('loginRequiredModal').classList.add('active');
-    return;
+    return false;
   }
+  return true;
+}
+
+async function toggleResolve(id) {
+  if (!requireAuth()) return;
   const s = situations.find(x => x.id === id);
   if (!s) return;
-  const newResolved = !s.resolved;
+  const next = !s.resolved;
   try {
-    await updateDoc(doc(db, "signalements", id), { resolved: newResolved });
+    await updateDoc(doc(db, 'signalements', id), { resolved: next });
     showToast(currentLang === 'fr'
-      ? (newResolved ? '✓ Marqué comme résolu' : '↩ Rouvert')
-      : (newResolved ? '✓ وُضعت علامة محلول' : '↩ أُعيد فتحه')
-    );
-  } catch (error) {
-    console.error(error);
-    showToast(currentLang === 'fr' ? 'Erreur Firebase' : 'خطأ في Firebase');
+      ? (next ? '✓ Marqué comme résolu' : '↩ Rouvert')
+      : (next ? '✓ وُضعت علامة محلول'  : '↩ أُعيد فتحه'));
+  } catch (err) {
+    console.error(err);
+    showToast(currentLang === 'fr' ? '❌ Erreur Firebase' : '❌ خطأ في Firebase');
   }
 }
 
@@ -679,96 +672,126 @@ function resolveFromMap(id) {
 }
 
 async function reportSituation(id) {
-  // Auth obligatoire
-  if (!currentUser) {
-    document.getElementById('loginRequiredModal').classList.add('active');
-    return;
-  }
+  if (!requireAuth()) return;
   const s = situations.find(x => x.id === id);
   if (!s) return;
+
+  // Anti-doublon : un même user ne peut reporter qu'une fois
+  const reportedBy = s.reportedBy || [];
+  if (reportedBy.includes(currentUser.uid)) {
+    showToast(currentLang === 'fr'
+      ? '⚠️ Vous avez déjà signalé cette situation'
+      : '⚠️ لقد أبلغت عن هذا الموقف مسبقاً');
+    return;
+  }
+
   const newCount = (s.reportCount || 0) + 1;
 
   try {
     if (newCount >= 2) {
-      await deleteDoc(doc(db, "signalements", id));
-      document.getElementById('detailModal').classList.remove('active');
+      await deleteDoc(doc(db, 'signalements', id));
+      document.getElementById('detailModal')?.classList.remove('active');
       showToast(currentLang === 'fr'
-        ? '🗑️ Situation supprimée automatiquement (2 signalements)'
-        : '🗑️ تم حذف الموقف تلقائياً (بلاغان)');
+        ? '🗑️ Situation supprimée (2 signalements)'
+        : '🗑️ تم حذف الموقف تلقائياً');
       return;
     }
-    await updateDoc(doc(db, "signalements", id), { reportCount: newCount });
+    await updateDoc(doc(db, 'signalements', id), {
+      reportCount: newCount,
+      reportedBy: arrayUnion(currentUser.uid),
+    });
     showToast(currentLang === 'fr'
-      ? `⚠️ Signalé (${newCount}/2 — suppression auto à 2)`
-      : `⚠️ تم الإبلاغ (${newCount}/2 — يُحذف تلقائياً عند 2)`);
-  } catch (error) {
-    console.error(error);
-    showToast(currentLang === 'fr' ? 'Erreur Firebase' : 'خطأ في Firebase');
+      ? `⚠️ Signalé (${newCount}/2)`
+      : `⚠️ تم الإبلاغ (${newCount}/2)`);
+  } catch (err) {
+    console.error(err);
+    showToast(currentLang === 'fr' ? '❌ Erreur Firebase' : '❌ خطأ في Firebase');
+  }
+}
+
+async function confirmSituation(id) {
+  if (!requireAuth()) return;
+  const s = situations.find(x => x.id === id);
+  if (!s) return;
+
+  const confirmedBy = s.confirmedBy || [];
+  if (confirmedBy.includes(currentUser.uid)) {
+    showToast(currentLang === 'fr'
+      ? '⚠️ Vous avez déjà confirmé cette situation'
+      : '⚠️ لقد أكدت هذا الموقف مسبقاً');
+    return;
+  }
+
+  try {
+    // arrayUnion côté Firestore garantit l'unicité même en cas de race condition
+    await updateDoc(doc(db, 'signalements', id), {
+      confirmedBy: arrayUnion(currentUser.uid),
+    });
+    showToast(currentLang === 'fr' ? '✓ Situation confirmée — merci !' : '✓ تم التأكيد — شكراً!');
+  } catch (err) {
+    console.error(err);
+    showToast(currentLang === 'fr' ? '❌ Erreur Firebase' : '❌ خطأ في Firebase');
   }
 }
 
 async function addComment(id) {
-  if (!currentUser) {
-    document.getElementById('loginRequiredModal').classList.add('active');
-    return;
-  }
+  if (!requireAuth()) return;
   const input = document.getElementById(`commentInput_${id}`);
-  if (!input) return;
-  const text = input.value.trim();
-  if (!text) return;
+  const text  = input?.value.trim();
+  if (!text || text.length > 300) return;
+
   const s = situations.find(x => x.id === id);
   if (!s) return;
-  const newComments = [...(s.comments || []), { text, createdAt: new Date().toISOString() }];
+
+  const updated = [...(s.comments || []), {
+    text,
+    createdAt: new Date().toISOString(),
+    userId: currentUser.uid,
+    userName: currentUser.displayName || '',
+  }];
 
   try {
-    await updateDoc(doc(db, "signalements", id), { comments: newComments });
+    await updateDoc(doc(db, 'signalements', id), { comments: updated });
     showToast(currentLang === 'fr' ? '💬 Commentaire ajouté' : '💬 تمت إضافة التعليق');
     openDetail(id);
-  } catch (error) {
-    console.error(error);
-    showToast(currentLang === 'fr' ? 'Erreur Firebase' : 'خطأ في Firebase');
+  } catch (err) {
+    console.error(err);
+    showToast(currentLang === 'fr' ? '❌ Erreur Firebase' : '❌ خطأ في Firebase');
   }
 }
 
 function goToRoute(lat, lng) {
-  const url = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`;
-  window.open(url, '_blank');
+  window.open(`https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`, '_blank');
 }
 
-// ── FILTER ────────────────────────────────────
+// ─── Filtres & stats ──────────────────────────────────────────────────────────
+
 function setFilter(filter, btn) {
-  currentFilter = filter;
+  activeFilter = filter;
   document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
   renderAll();
 }
 
 function getFiltered() {
-  if (currentFilter === 'all') return situations;
-  return situations.filter(s => s.type === currentFilter);
+  return activeFilter === 'all' ? situations : situations.filter(s => s.type === activeFilter);
 }
 
-// ── STATS ─────────────────────────────────────
 function updateStats() {
-  document.getElementById('totalCount').textContent = situations.length;
+  document.getElementById('totalCount').textContent    = situations.length;
   document.getElementById('resolvedCount').textContent = situations.filter(s => s.resolved).length;
-  document.getElementById('activeCount').textContent = situations.filter(s => !s.resolved).length;
+  document.getElementById('activeCount').textContent   = situations.filter(s => !s.resolved).length;
 }
 
-// ── LANGUAGE ──────────────────────────────────
+// ─── Langue ───────────────────────────────────────────────────────────────────
+
 function toggleLang() {
   currentLang = currentLang === 'fr' ? 'ar' : 'fr';
   document.documentElement.setAttribute('lang', currentLang);
   document.documentElement.setAttribute('dir', currentLang === 'ar' ? 'rtl' : 'ltr');
   document.body.classList.toggle('ar', currentLang === 'ar');
-
-  const btn = document.getElementById('langToggle');
-  btn.textContent = currentLang === 'fr' ? 'العربية' : 'Français';
-
-  document.querySelectorAll('[data-fr][data-ar]').forEach(el => {
-    el.textContent = currentLang === 'ar' ? el.dataset.ar : el.dataset.fr;
-  });
-
+  document.getElementById('langToggle').textContent = currentLang === 'fr' ? 'العربية' : 'Français';
+  applyLang(currentLang);
   renderAll();
 }
 
@@ -778,14 +801,14 @@ function applyLang(lang) {
   });
 }
 
-// ── MODALS ────────────────────────────────────
+// ─── Modals & toasts ──────────────────────────────────────────────────────────
+
 function closeOnOverlay(event, modalId) {
   if (event.target === document.getElementById(modalId)) {
     document.getElementById(modalId).classList.remove('active');
   }
 }
 
-// ── TOAST ─────────────────────────────────────
 function showToast(msg) {
   const t = document.getElementById('toast');
   t.textContent = msg;
@@ -793,94 +816,37 @@ function showToast(msg) {
   setTimeout(() => t.classList.remove('show'), 2800);
 }
 
-// ── UTILS ─────────────────────────────────────
-function getTimeAgo(isoString) {
-  const diff = Date.now() - new Date(isoString).getTime();
-  const mins = Math.floor(diff / 60000);
-  const hrs = Math.floor(diff / 3600000);
-  const days = Math.floor(diff / 86400000);
+// ─── Utilitaires ──────────────────────────────────────────────────────────────
 
+function getTimeAgo(iso) {
+  const mins = Math.floor((Date.now() - new Date(iso)) / 60000);
+  const hrs  = Math.floor(mins / 60);
+  const days = Math.floor(hrs  / 24);
   if (currentLang === 'ar') {
-    if (mins < 1) return 'الآن';
+    if (mins < 1)  return 'الآن';
     if (mins < 60) return `منذ ${mins} دقيقة`;
-    if (hrs < 24) return `منذ ${hrs} ساعة`;
+    if (hrs  < 24) return `منذ ${hrs} ساعة`;
     return `منذ ${days} يوم`;
   }
-  if (mins < 1) return 'À l\'instant';
+  if (mins < 1)  return "À l'instant";
   if (mins < 60) return `Il y a ${mins} min`;
-  if (hrs < 24) return `Il y a ${hrs}h`;
+  if (hrs  < 24) return `Il y a ${hrs}h`;
   return `Il y a ${days}j`;
 }
 
-function getDaysLeft(isoString) {
-  const created = new Date(isoString).getTime();
-  const elapsed = Date.now() - created;
-  const limitMs = EXPIRATION_DAYS * 24 * 60 * 60 * 1000;
-  const remaining = limitMs - elapsed;
-  if (remaining <= 0) return null;
-  return Math.ceil(remaining / (24 * 60 * 60 * 1000));
+function getDaysLeft(iso) {
+  const remaining = EXPIRATION_DAYS * 86400000 - (Date.now() - new Date(iso));
+  return remaining > 0 ? Math.ceil(remaining / 86400000) : null;
 }
 
-function save() {
-  localStorage.setItem('rahmapoint_situations', JSON.stringify(situations));
-}
+// ─── Exposition globale (nécessaire pour les onclick dans les templates HTML) ─
 
-// ── DEMO DATA (first visit) ──────────────────
-if (situations.length === 0) {
-  const demos = [
-    {
-      id: '1',
-      type: 'nourriture',
-      description: 'Famille de 5 personnes sans nourriture depuis 2 jours. Besoin urgent.',
-      location: 'Rue Didouche Mourad, Sétif',
-      contact: '0555 12 34 56',
-      lat: 36.1914, lng: 5.4108,
-      createdAt: new Date(Date.now() - 3600000 * 3).toISOString(),
-      resolved: false, reportCount: 0, comments: [], confirmedBy: [],
-    },
-    {
-      id: '2',
-      type: 'medical',
-      description: 'Personne âgée nécessitant un accompagnement médical. Pas de moyen de transport.',
-      location: 'Cité El Hidhab, Sétif',
-      contact: '0666 98 76 54',
-      lat: 36.1972, lng: 5.4001,
-      createdAt: new Date(Date.now() - 3600000 * 7).toISOString(),
-      resolved: true, reportCount: 0, comments: [], confirmedBy: [],
-    },
-    {
-      id: '3',
-      type: 'vetement',
-      description: 'Vêtements chauds pour enfants 4-8 ans recherchés. Hiver difficile.',
-      location: 'Quartier Bazerdjemane, Sétif',
-      contact: '',
-      lat: 36.1843, lng: 5.4223,
-      createdAt: new Date(Date.now() - 3600000 * 24).toISOString(),
-      resolved: false, reportCount: 0, comments: [], confirmedBy: [],
-    },
-  ];
-  situations = demos;
-  save();
-}
-
-// ── EXPOSITION GLOBALE ───────────────────────
-window.loginWithGoogle    = loginWithGoogle;
-window.logoutUser         = logoutUser;
-window.acceptPrivacy      = acceptPrivacy;
-window.updateAcceptBtn    = updateAcceptBtn;
-window.openSignalModal    = openSignalModal;
-window.closeSignalModal   = closeSignalModal;
-window.selectType         = selectType;
-window.getLocation        = getLocation;
-window.submitSignal       = submitSignal;
-window.toggleLang         = toggleLang;
-window.toggleResolve      = toggleResolve;
-window.resolveFromMap     = resolveFromMap;
-window.reportSituation    = reportSituation;
-window.addComment         = addComment;
-window.goToRoute          = goToRoute;
-window.openDetail         = openDetail;
-window.setFilter          = setFilter;
-window.switchMapStyle     = switchMapStyle;
-window.closeOnOverlay     = closeOnOverlay;
-window.confirmSituation   = confirmSituation;   // ← nouveau
+Object.assign(window, {
+  loginWithGoogle, logoutUser,
+  acceptPrivacy, updateAcceptBtn,
+  openSignalModal, closeSignalModal, selectType, getLocation, submitSignal,
+  toggleLang,
+  toggleResolve, resolveFromMap, reportSituation, confirmSituation, addComment,
+  goToRoute, openDetail,
+  setFilter, switchMapStyle, closeOnOverlay,
+});
